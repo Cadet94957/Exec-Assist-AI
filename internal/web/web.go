@@ -95,7 +95,57 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /connect/google/callback", s.authed(s.handleGoogleCallback))
 	mux.Handle("POST /connect/google/sync", s.authed(s.handleSyncGoogle))
 	mux.Handle("POST /connect/google/disconnect", s.authed(s.handleDisconnectGoogle))
+	mux.Handle("POST /learned/confirm", s.authed(s.handleConfirmFact))
+	mux.Handle("POST /learned/discard", s.authed(s.handleDiscardFact))
 	return mux
+}
+
+// handleConfirmFact accepts an inferred fact.
+func (s *Server) handleConfirmFact(w http.ResponseWriter, r *http.Request, t tenant.Tenant) {
+	s.reviewFact(w, r, t, true)
+}
+
+// handleDiscardFact rejects one. memoryweb soft-deletes, so a mistake here is
+// recoverable — which matters when the contractor is skimming.
+func (s *Server) handleDiscardFact(w http.ResponseWriter, r *http.Request, t tenant.Tenant) {
+	s.reviewFact(w, r, t, false)
+}
+
+func (s *Server) reviewFact(w http.ResponseWriter, r *http.Request, t tenant.Tenant, keep bool) {
+	if err := r.ParseForm(); err != nil {
+		s.noticeAt(w, r, "/learned", "Couldn't read that.")
+		return
+	}
+	id := strings.TrimSpace(r.PostFormValue("id"))
+	if id == "" {
+		s.noticeAt(w, r, "/learned", "Couldn't tell which one you meant.")
+		return
+	}
+
+	stores, err := s.tenants.Stores(t.ID)
+	if err != nil {
+		s.fail(w, "open your data", err)
+		return
+	}
+
+	if keep {
+		if err := stores.Memory.Confirm(id); err != nil {
+			s.fail(w, "save that", err)
+			return
+		}
+		s.noticeAt(w, r, "/learned", "Got it — I'll rely on that.")
+		return
+	}
+	if err := stores.Memory.Forget(id, "Discarded during review by the contractor."); err != nil {
+		s.fail(w, "discard that", err)
+		return
+	}
+	s.noticeAt(w, r, "/learned", "Dropped it.")
+}
+
+// noticeAt redirects to a path carrying a short message.
+func (s *Server) noticeAt(w http.ResponseWriter, r *http.Request, path, msg string) {
+	http.Redirect(w, r, path+"?notice="+url.QueryEscape(msg), http.StatusSeeOther)
 }
 
 // notice redirects home carrying a short message for the contractor. Keeping
@@ -223,19 +273,39 @@ func (s *Server) handleLearned(w http.ResponseWriter, r *http.Request, t tenant.
 		s.fail(w, "read what I've learned", err)
 		return
 	}
+
+	// Inferred facts are held back for review rather than mixed in with what
+	// the assistant already relies on.
+	pending, err := stores.Memory.Pending(20)
+	if err != nil {
+		s.fail(w, "read what's waiting for review", err)
+		return
+	}
+	confirmed := func(in []memory.Recalled) []memory.Recalled {
+		out := make([]memory.Recalled, 0, len(in))
+		for _, r := range in {
+			if !r.Unconfirmed() {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
 	domains, err := stores.Memory.Domains()
 	if err != nil {
 		s.fail(w, "list your areas", err)
 		return
 	}
 
+	important, recent := confirmed(sig.Important), confirmed(sig.Recent)
 	s.render(w, "learned.html", map[string]any{
 		"Tenant":    t,
 		"Domains":   domains,
 		"Domain":    domain,
-		"Important": sig.Important,
-		"Recent":    sig.Recent,
-		"Total":     len(sig.Important) + len(sig.Recent),
+		"Important": important,
+		"Recent":    recent,
+		"Pending":   pending,
+		"Notice":    r.URL.Query().Get("notice"),
+		"Total":     len(important) + len(recent) + len(pending),
 	})
 }
 

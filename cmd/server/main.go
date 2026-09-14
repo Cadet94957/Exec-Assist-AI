@@ -24,7 +24,9 @@ import (
 
 	googleconnect "github.com/Cadet94957/Exec-Assist-AI/internal/connect/google"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/embed"
+	"github.com/Cadet94957/Exec-Assist-AI/internal/extract"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/ledger"
+	"github.com/Cadet94957/Exec-Assist-AI/internal/llm"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/memory"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/secrets"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/tenant"
@@ -44,6 +46,11 @@ func main() {
 		case "seed-demo":
 			if err := seedDemo(os.Args[2:]); err != nil {
 				log.Fatalf("seed-demo: %v", err)
+			}
+			return
+		case "backfill":
+			if err := backfill(os.Args[2:]); err != nil {
+				log.Fatalf("backfill: %v", err)
 			}
 			return
 		}
@@ -113,6 +120,18 @@ func serve() error {
 		log.Print("[google] calendar connection enabled")
 	}
 
+	llmCfg := llmConfigFromEnv()
+	var brain *llm.Client
+	if llmCfg.Configured() {
+		brain, err = llm.New(llmCfg)
+		if err != nil {
+			return err
+		}
+		log.Printf("[extract] enabled, model %s", brain.Model())
+	} else {
+		log.Print("[extract] ANTHROPIC_API_KEY is unset — nothing will be learned from synced data")
+	}
+
 	site, err := web.New(tenants, secret, os.Getenv("INSECURE_COOKIES") != "1", gcfg, box)
 	if err != nil {
 		return err
@@ -136,6 +155,12 @@ func serve() error {
 	// and the 6am brief would be built from whatever was last fetched.
 	if gcfg.Configured() && box != nil {
 		go syncLoop(ctx, gcfg, tenants, box)
+	}
+
+	// Learning runs far less often than syncing: patterns emerge over weeks,
+	// and every pass costs money.
+	if brain != nil {
+		go extractLoop(ctx, brain, tenants)
 	}
 
 	errCh := make(chan error, 1)
@@ -212,6 +237,120 @@ func syncAll(ctx context.Context, cfg googleconnect.Config, tenants *tenant.Mana
 			log.Printf("[google] sync %s: %d events, %d removed", t.ID, res.Fetched, res.Removed)
 		}
 	}
+}
+
+// llmConfigFromEnv reads the model settings. ANTHROPIC_BASE_URL exists so the
+// whole path can be pointed at a gateway, a proxy, or a stub during testing.
+func llmConfigFromEnv() llm.Config {
+	return llm.Config{
+		APIKey:  os.Getenv("ANTHROPIC_API_KEY"),
+		Model:   os.Getenv("ANTHROPIC_MODEL"),
+		BaseURL: os.Getenv("ANTHROPIC_BASE_URL"),
+	}
+}
+
+// extractInterval is how often the assistant re-reads a tenant's recent
+// history looking for rules. Daily is plenty — a weekday pattern does not
+// appear between lunch and dinner — and it keeps per-tenant spend predictable.
+const extractInterval = 24 * time.Hour
+
+func extractLoop(ctx context.Context, brain *llm.Client, tenants *tenant.Manager) {
+	ticker := time.NewTicker(extractInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			extractAll(ctx, brain, tenants)
+		}
+	}
+}
+
+func extractAll(ctx context.Context, brain *llm.Client, tenants *tenant.Manager) {
+	all, err := tenants.List()
+	if err != nil {
+		log.Printf("[extract] list tenants: %v", err)
+		return
+	}
+	for _, t := range all {
+		if ctx.Err() != nil {
+			return
+		}
+		res, err := runExtract(ctx, brain, tenants, t)
+		if err != nil {
+			log.Printf("[extract] %s: %v", t.ID, err)
+			continue
+		}
+		if res.Recorded > 0 || res.Rejected > 0 {
+			log.Printf("[extract] %s: proposed %d, recorded %d, duplicates %d, rejected %d",
+				t.ID, res.Proposed, res.Recorded, res.Duplicates, res.Rejected)
+		}
+	}
+}
+
+func runExtract(ctx context.Context, brain *llm.Client, tenants *tenant.Manager, t tenant.Tenant) (extract.Result, error) {
+	stores, err := tenants.Stores(t.ID)
+	if err != nil {
+		return extract.Result{}, err
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+
+	return extract.Run(callCtx, brain,
+		extract.Stores{Ledger: stores.Ledger, Memory: stores.Memory},
+		t.Location(), time.Now())
+}
+
+// backfill runs one extraction pass now, rather than waiting for the daily
+// tick. This is what turns a freshly connected calendar into a populated graph
+// while someone is still watching.
+func backfill(args []string) error {
+	fs := flag.NewFlagSet("backfill", flag.ExitOnError)
+	id := fs.String("id", "", "tenant to learn from; omit for all")
+	dataDir := fs.String("data", envOr("DATA_DIR", "./data"), "data directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	brain, err := llm.New(llmConfigFromEnv())
+	if err != nil {
+		return err
+	}
+
+	tenants, err := tenant.NewManager(*dataDir)
+	if err != nil {
+		return err
+	}
+	defer tenants.Close()
+
+	list, err := tenants.List()
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	ran := 0
+	for _, t := range list {
+		if *id != "" && t.ID != *id {
+			continue
+		}
+		ran++
+		res, err := runExtract(ctx, brain, tenants, t)
+		if err != nil {
+			return fmt.Errorf("%s: %w", t.ID, err)
+		}
+		fmt.Printf("%s: read %d appointments, proposed %d, recorded %d (%d duplicates, %d rejected)\n",
+			t.Name, res.Appointments, res.Proposed, res.Recorded, res.Duplicates, res.Rejected)
+		fmt.Printf("  tokens: %d in (%d from cache), %d out\n",
+			res.Usage.Input, res.Usage.CacheRead, res.Usage.Output)
+	}
+	if ran == 0 {
+		return errors.New("no matching tenant")
+	}
+	fmt.Println("\nAnything new is waiting for review on the \"What I've learned\" page.")
+	return nil
 }
 
 // startEmbedShim binds a loopback listener, serves the Ollama-shaped endpoint

@@ -77,6 +77,12 @@ var validRelations = map[Relation]bool{
 	GovernedBy: true, Resolved: true, ResolvedBy: true, Supersedes: true,
 }
 
+// TagUnconfirmed marks a fact the assistant inferred but a person has not yet
+// agreed with. Extraction is useful but not trustworthy on its own, so
+// everything it proposes lands here first and is shown for review. Confirming
+// removes the tag; discarding archives the fact with a reason.
+const TagUnconfirmed = "unconfirmed"
+
 // ErrNoWhyMatters is returned when a caller tries to file something without
 // saying why it should change future behaviour. This is the guard that keeps
 // the graph a decision log.
@@ -104,6 +110,9 @@ type Fact struct {
 	Tags []string
 	// OccurredAt is when the underlying thing happened, if it differs from now.
 	OccurredAt *time.Time
+	// Unconfirmed marks this as inferred rather than told, so it is held for
+	// review instead of being acted on immediately.
+	Unconfirmed bool
 }
 
 // Recalled is a fact coming back out of the graph. Callers work with this
@@ -116,9 +125,20 @@ type Recalled struct {
 	WhyMatters string
 	Domain     string
 	Kind       Kind
+	Tags       []string
 	// Importance is how much the rest of the graph leans on this fact. It is
 	// zero for facts that have not been ranked, which is most of them early on.
 	Importance float64
+}
+
+// Unconfirmed reports whether this fact is still awaiting review.
+func (r Recalled) Unconfirmed() bool {
+	for _, t := range r.Tags {
+		if t == TagUnconfirmed {
+			return true
+		}
+	}
+	return false
 }
 
 // Summary is what the assistant knows, arranged for reading.
@@ -181,6 +201,10 @@ func (s *Store) Record(f Fact) (*db.Node, error) {
 	if kind == "" {
 		kind = Finding
 	}
+	tags := f.Tags
+	if f.Unconfirmed {
+		tags = append(append([]string{}, tags...), TagUnconfirmed)
+	}
 	if !validKinds[kind] {
 		return nil, fmt.Errorf("memory: unknown kind %q", kind)
 	}
@@ -191,7 +215,7 @@ func (s *Store) Record(f Fact) (*db.Node, error) {
 		f.WhyMatters,
 		f.Domain,
 		f.OccurredAt,
-		strings.Join(f.Tags, ","),
+		strings.Join(tags, ","),
 		string(kind),
 	)
 	if err != nil {
@@ -317,6 +341,62 @@ func (s *Store) Counts() (live, archived int, err error) {
 	return live, archived, nil
 }
 
+// SimilarTo finds existing facts close enough to a proposed label that
+// recording it again would duplicate rather than add. Extraction runs
+// repeatedly over the same history, so without this the graph fills with
+// near-identical restatements of the same rule.
+func (s *Store) SimilarTo(label, domain string) ([]Recalled, error) {
+	nodes, err := s.st.FindPossibleDuplicates(label, domain, "")
+	if err != nil {
+		return nil, fmt.Errorf("memory: find duplicates of %q: %w", label, err)
+	}
+	out := make([]Recalled, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, recalled(n, 0))
+	}
+	return out, nil
+}
+
+// Pending lists facts awaiting review, newest first.
+func (s *Store) Pending(limit int) ([]Recalled, error) {
+	all, err := s.All("", 200)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Recalled, 0, limit)
+	for _, r := range all {
+		if r.Unconfirmed() {
+			out = append(out, r)
+			if len(out) == limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// Confirm accepts an inferred fact, removing the unconfirmed tag so it counts
+// as something the assistant may rely on.
+func (s *Store) Confirm(id string) error {
+	node, err := s.st.GetNode(id)
+	if err != nil {
+		return fmt.Errorf("memory: confirm %s: %w", id, err)
+	}
+
+	kept := make([]string, 0)
+	for _, t := range splitTags(node.Node.Tags) {
+		if t != TagUnconfirmed {
+			kept = append(kept, t)
+		}
+	}
+	tags := strings.Join(kept, ",")
+
+	if _, err := s.st.UpdateNode(id, nil, nil, nil, &tags, nil, nil, nil, nil); err != nil {
+		return fmt.Errorf("memory: confirm %s: %w", id, err)
+	}
+	return nil
+}
+
 // Forget archives a fact with a reason. memoryweb soft-deletes, so this is
 // reversible — which matters when the assistant learns something wrong and the
 // contractor corrects it.
@@ -362,6 +442,21 @@ func recalled(n db.Node, importance float64) Recalled {
 		WhyMatters: n.WhyMatters,
 		Domain:     n.Domain,
 		Kind:       Kind(n.NodeKind),
+		Tags:       splitTags(n.Tags),
 		Importance: importance,
 	}
+}
+
+func splitTags(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

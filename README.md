@@ -64,6 +64,9 @@ make run                                          # http://localhost:8080
 | `GOOGLE_CLIENT_ID` | unset | From Google Cloud Console — see below. |
 | `GOOGLE_CLIENT_SECRET` | unset | " |
 | `GOOGLE_REDIRECT_URL` | unset | `https://yourdomain/connect/google/callback`, matching the console exactly. |
+| `ANTHROPIC_API_KEY` | unset | Turns on learning. Without it, synced data is mirrored but nothing is learned from it. |
+| `ANTHROPIC_MODEL` | `claude-opus-5` | |
+| `ANTHROPIC_BASE_URL` | unset | Point at a gateway, proxy, or stub. Leave unset for Anthropic. |
 
 ### About embeddings
 
@@ -116,6 +119,47 @@ a pilot.
 - Failures are recorded on the connection and shown on the dashboard. A calendar that
   silently stopped updating is worse than one that says it is stuck.
 
+## How learning works
+
+This is the step that makes it more than a calendar mirror.
+
+Once a day (or on demand via `backfill`), the assistant re-reads the last 90 days of the
+ledger and asks Claude what *general rules* the data supports — not what happened, but
+what should change a decision next time. Anything it finds is filed in the memory graph
+**tagged unconfirmed**, and shown on the "What I've learned" page for a yes/no.
+
+```sh
+./bin/server backfill -id dave-glass     # one pass now, for one tenant
+./bin/server backfill                    # every tenant
+```
+
+### Why the prompt is mostly about what *not* to record
+
+A model asked to "find insights" will always find some. That is the failure mode that
+turns this from useful into noise, and it is not something the `why_matters` guard can
+catch — the guard rejects an *empty* reason, not a worthless one.
+
+So `internal/extract/prompt.go` spends most of its length on exclusions, and explicitly
+blesses the empty answer: *"An empty list is the correct answer far more often than not,
+and is never a failure."* It also requires an **evidence** field naming what in the data
+supports each claim; anything without one is dropped before it reaches the graph. That is
+the check that keeps out plausible inventions.
+
+Three more things hold the line:
+
+- Nothing is relied on until a person confirms it. An inference is not knowledge.
+- Domains are a fixed set of six. memoryweb degrades when domains multiply, because recall
+  gets diluted across near-identical buckets.
+- A run proposing more than ten facts is treated as a malfunction and truncated.
+
+### A known limitation
+
+Duplicate detection matches on the *normalised label*, so "Marriott bills the GC" and
+"Marriott 4th St bills the general contractor" are not recognised as the same rule. The
+main defence is that every run is given the facts already known and told not to restate
+them — but a determined rephrasing can still slip through. Review is where you catch it,
+and discarding is one click and reversible.
+
 ## Deploying
 
 ```sh
@@ -124,6 +168,7 @@ fly secrets set SESSION_SECRET="$(openssl rand -hex 32)"
 fly secrets set TOKEN_KEY="$(openssl rand -hex 32)"
 fly secrets set GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... \
                 GOOGLE_REDIRECT_URL=https://yourdomain/connect/google/callback
+fly secrets set ANTHROPIC_API_KEY=sk-ant-...
 make deploy
 ```
 
@@ -138,16 +183,17 @@ reason — a stopped machine is a missed 6am brief.
 
 ## Where this is up to
 
-Phases 0 and 1 are done. What works today: tenants, both stores, the `why_matters` guard,
-sign-in, the dashboard, the "What I've learned" page, recall by text, and Google Calendar
-connection with background sync.
+Phases 0, 1 and 2 are done. What works today: tenants, both stores, the `why_matters`
+guard, sign-in, the dashboard, recall by text, Google Calendar connection with background
+sync, and the extraction pass with its review queue.
 
 Not built yet: the PWA shell, magic-link sign-in, the inbound email address and universal
 webhook, the morning and evening briefs over SMS, and billing.
 
-The live OAuth round trip is the one thing not verified here — it needs real Google
-credentials. Everything downstream of the token (paging, parsing, upsert, deletion
-reconcile, encryption, CSRF state) is covered by tests that run offline.
+Two things are unverified here because they need live credentials: the Google OAuth token
+exchange, and a real Claude call. Everything either side of them is covered by tests that
+run offline — the extraction suite drives the real SDK encoding against a stub API, so
+what is untested is the network hop, not the logic.
 
 Two things that are cheap now and expensive later, so do them early:
 
