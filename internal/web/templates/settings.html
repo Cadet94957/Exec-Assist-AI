@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en"><head>{{template "head" .}}<title>Settings</title></head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+{{template "shell" .}}
+  <h1 class="page">Settings</h1>
+
+  {{if .Notice}}<p class="notice" role="status">{{.Notice}}</p>{{end}}
+
+  <section aria-labelledby="cal-h">
+    <h2 id="cal-h">Calendar</h2>
+    <div class="card">
+      {{if .GoogleConnected}}
+        <div class="calbar">
+          <span class="dot on" aria-hidden="true"></span>
+          <span>Connected{{if .Connection.Account}} &middot; {{.Connection.Account}}{{end}}</span>
+          <span class="muted">synced {{ago .Connection.LastSync}}</span>
+          <span class="calactions">
+            <form method="post" action="/connect/google/sync"><button class="link">Sync now</button></form>
+            <form method="post" action="/connect/google/disconnect"
+                  onsubmit="return confirm('Disconnect Google Calendar? The appointments it brought in will be removed.')">
+              <button class="link quiet">Disconnect</button>
+            </form>
+          </span>
+        </div>
+        {{if .Connection.LastError.Valid}}
+          <p class="syncerr">The last sync had trouble. It will keep retrying.</p>
+        {{end}}
+        <p class="muted small">Your calendar is re-read every 10 minutes.</p>
+      {{else if .GoogleReady}}
+        <p style="margin:0 0 12px">Connect Google Calendar and today's jobs appear here automatically.</p>
+        <a class="btnlink" href="/connect/google">Connect Google Calendar</a>
+      {{else}}
+        <p class="muted" style="margin:0">Calendar connection isn't configured on this server yet.</p>
+      {{end}}
+    </div>
+  </section>
+
+  <section id="memory" aria-labelledby="mem-h">
+    <h2 id="mem-h">Memory</h2>
+
+    {{if .Pending}}
+      <div class="card">
+        <p style="margin:0 0 4px"><strong>Does this look right?</strong></p>
+        <p class="muted small" style="margin:0 0 14px">I noticed these while reading your calendar. I won't rely on anything here until you say so.</p>
+        {{range .Pending}}
+          <div class="fact pending">
+            <p class="label">{{.Label}} <span class="kind">{{.Kind}}</span></p>
+            {{if .Detail}}<p class="small">{{.Detail}}</p>{{end}}
+            <p class="why">{{.WhyMatters}}</p>
+            <div class="review">
+              <form method="post" action="/memory/confirm">
+                <input type="hidden" name="id" value="{{.ID}}">
+                <button class="link">Yes, remember it</button>
+              </form>
+              <form method="post" action="/memory/discard">
+                <input type="hidden" name="id" value="{{.ID}}">
+                <button class="link quiet">No, drop it</button>
+              </form>
+            </div>
+          </div>
+        {{end}}
+      </div>
+    {{end}}
+
+    <p class="muted small">What I understand about your business. This is everything I use when I plan your day &mdash; remove anything that's wrong or out of date.</p>
+
+    {{if .Domains}}
+      <nav class="filters" aria-label="Filter memory by area">
+        <a href="/settings#memory" {{if not .Domain}}aria-current="true"{{end}}>All</a>
+        {{range .Domains}}<a href="/settings?domain={{.}}#memory" {{if eq $.Domain .}}aria-current="true"{{end}}>{{.}}</a>{{end}}
+      </nav>
+    {{end}}
+
+    {{if or .Important .Recent}}
+      <div class="card">
+        {{range .Important}}{{template "memoryitem" .}}{{end}}
+        {{range .Recent}}{{template "memoryitem" .}}{{end}}
+      </div>
+    {{else if not .Pending}}
+      <div class="card">
+        <p class="empty" style="margin:0">Nothing yet. Once your calendar is connected I'll start noticing how you work, and check anything important with you before relying on it.</p>
+      </div>
+    {{end}}
+  </section>
+
+  <section aria-labelledby="acct-h">
+    <h2 id="acct-h">Account</h2>
+    <div class="card">
+      <dl class="kv">
+        <dt>Business</dt><dd>{{.Tenant.Name}}</dd>
+        <dt>Trade</dt><dd>{{.Tenant.Trade}}</dd>
+        <dt>Time zone</dt><dd>{{.Tenant.Timezone}}</dd>
+        {{if .Tenant.Phone}}<dt>Mobile</dt><dd>{{.Tenant.Phone}}</dd>{{end}}
+      </dl>
+      <form method="post" action="/logout" style="margin-top:14px">
+        <button type="submit" class="link quiet">Sign out</button>
+      </form>
+    </div>
+  </section>
+{{template "shellend" .}}
+</body></html>

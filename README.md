@@ -119,6 +119,42 @@ a pilot.
 - Failures are recorded on the connection and shown on the dashboard. A calendar that
   silently stopped updating is worse than one that says it is stuck.
 
+## Where things live
+
+Two places, deliberately.
+
+**Today** (`/`) — the only screen anyone opens daily. Stops in order, counters, and the
+ask-anything box. Nothing else.
+
+**Settings** (`/settings`) — calendar connection, **Memory**, and account.
+
+The memory sits in Settings rather than the main navigation, the way Claude's own memory
+does. A contractor does not want to manage a knowledge graph; they want their day handled.
+It stays visible and editable because that is how a wrong inference gets corrected and how
+you answer "what does this thing actually know about me" — but it is not a destination.
+When something is waiting to be reviewed, Today shows one quiet line pointing at it.
+
+`/learned`, the old URL, redirects to `/settings#memory`.
+
+## It is a desktop app and a website
+
+The same build is both. Visit the URL like any site, or install it — Chrome and Edge offer
+an Install button, and it then gets its own window, its own icon in the dock or Start
+menu, and launches with no address bar.
+
+- **Zero external resources.** No CDN, no analytics, no fonts fetched from anywhere. The
+  whole app is served by your one binary, which is verified in a browser test.
+- **Accessible**, and checked rather than assumed: an automated axe-core pass over every
+  page in both light and dark reports zero violations at any severity, plus a keyboard
+  walkthrough covering the skip link, tab order, and the live region that announces search
+  results. Two real failures came out of that pass and were fixed — unlabelled login
+  fields, and two colour pairs measured at 4.44:1 and 2.65:1 against a 4.5 minimum.
+
+If you later want a signed `.dmg`/`.exe` in the Applications folder, that is a Tauri
+wrapper around exactly this — about a day of work, but it brings an Apple Developer
+account, notarization, a Windows signing certificate, and an auto-update channel you would
+own. Worth doing when a customer asks; not before.
+
 ## How learning works
 
 This is the step that makes it more than a calendar mirror.
@@ -126,7 +162,7 @@ This is the step that makes it more than a calendar mirror.
 Once a day (or on demand via `backfill`), the assistant re-reads the last 90 days of the
 ledger and asks Claude what *general rules* the data supports — not what happened, but
 what should change a decision next time. Anything it finds is filed in the memory graph
-**tagged unconfirmed**, and shown on the "What I've learned" page for a yes/no.
+**tagged unconfirmed**, and shown under Settings → Memory for a yes/no.
 
 ```sh
 ./bin/server backfill -id dave-glass     # one pass now, for one tenant
@@ -184,11 +220,12 @@ reason — a stopped machine is a missed 6am brief.
 ## Where this is up to
 
 Phases 0, 1 and 2 are done. What works today: tenants, both stores, the `why_matters`
-guard, sign-in, the dashboard, recall by text, Google Calendar connection with background
-sync, and the extraction pass with its review queue.
+guard, sign-in, the Today screen, Settings with an editable memory, recall by text, Google
+Calendar connection with background sync, the extraction pass with its review queue, and
+the installable desktop app.
 
-Not built yet: the PWA shell, magic-link sign-in, the inbound email address and universal
-webhook, the morning and evening briefs over SMS, and billing.
+Not built yet: magic-link sign-in, the inbound email address and universal webhook, the
+morning and evening briefs over SMS, and billing.
 
 Two things are unverified here because they need live credentials: the Google OAuth token
 exchange, and a real Claude call. Everything either side of them is covered by tests that

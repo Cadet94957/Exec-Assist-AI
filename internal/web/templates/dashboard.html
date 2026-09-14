@@ -1,71 +1,55 @@
 <!doctype html>
 <html lang="en"><head>{{template "head" .}}<title>Today</title></head>
-<body><div class="wrap">
-  {{template "nav" .}}
+<body>
+<a class="skip" href="#main">Skip to content</a>
+{{template "shell" .}}
+  <h1 class="page">{{.Today}}</h1>
 
-  {{if .Notice}}<div class="notice">{{.Notice}}</div>{{end}}
+  {{if .Notice}}<p class="notice" role="status">{{.Notice}}</p>{{end}}
+
+  {{if .PendingCount}}
+    <p class="nudge">
+      I've noticed {{.PendingCount}} thing{{if ne .PendingCount 1}}s{{end}} about how you work &mdash;
+      <a href="/settings#memory">check {{if eq .PendingCount 1}}it{{else}}them{{end}} in Settings</a>.
+    </p>
+  {{end}}
 
   <div class="stats">
     <div class="stat"><div class="n">{{.Stats.OpenJobs}}</div><div class="l">Open jobs</div></div>
     <div class="stat"><div class="n">{{len .Appointments}}</div><div class="l">Stops today</div></div>
     <div class="stat"><div class="n">{{money .Stats.UnpaidCents}}</div><div class="l">Outstanding</div></div>
-    <div class="stat"><div class="n">{{.FactCount}}</div><div class="l">Things learned</div></div>
   </div>
 
-  <h2>{{.Today}}</h2>
-  <div class="card">
-    <div class="calbar">
-      {{if .GoogleConnected}}
-        <span class="dot on"></span>
-        <span>Calendar connected{{if .Connection.Account}} &middot; {{.Connection.Account}}{{end}}</span>
-        <span class="muted">synced {{ago .Connection.LastSync}}</span>
-        <span class="calactions">
-          <form method="post" action="/connect/google/sync"><button class="link">Sync now</button></form>
-          <form method="post" action="/connect/google/disconnect"
-                onsubmit="return confirm('Disconnect Google Calendar? The appointments it brought in will be removed.')">
-            <button class="link quiet">Disconnect</button>
-          </form>
-        </span>
-      {{else if .GoogleReady}}
-        <span class="dot off"></span>
-        <span>No calendar connected yet.</span>
-        <span class="calactions"><a class="btnlink" href="/connect/google">Connect Google Calendar</a></span>
+  <section aria-labelledby="stops-h">
+    <h2 id="stops-h" class="visually-hidden">Today's stops</h2>
+    <div class="card">
+      {{if .Appointments}}
+        <ul class="stops">
+        {{range .Appointments}}
+          <li>
+            <span class="when">{{time .StartsAt $.Loc}}</span>{{.Title}}
+            {{if .Location.Valid}}<span class="where">{{.Location.String}}</span>{{end}}
+          </li>
+        {{end}}
+        </ul>
+      {{else if .GoogleConnected}}
+        <p class="empty" style="margin:0">Nothing scheduled today.</p>
       {{else}}
-        <span class="dot off"></span>
-        <span class="muted">Calendar connection isn't configured on this server.</span>
+        <p style="margin:0 0 12px">No calendar connected yet, so I can't see your day.</p>
+        <a class="btnlink" href="/settings">Connect your calendar</a>
       {{end}}
     </div>
-    {{if .Connection.LastError.Valid}}
-      <p class="syncerr">Last sync had trouble. It will keep retrying.</p>
-    {{end}}
-    {{if .Appointments}}
-      <ul class="stops">
-      {{range .Appointments}}
-        <li>
-          <span class="when">{{time .StartsAt $.Loc}}</span>{{.Title}}
-          {{if .Location.Valid}}<div class="muted" style="font-size:14px;margin-left:0">{{.Location.String}}</div>{{end}}
-        </li>
-      {{end}}
-      </ul>
-    {{else}}
-      {{if .GoogleConnected}}
-        <p class="empty">Nothing scheduled today.</p>
-      {{else}}
-        <p class="empty">Nothing on the calendar yet. Connect Google Calendar to fill this in.</p>
-      {{end}}
-    {{end}}
-  </div>
+  </section>
 
-  <h2>Ask me anything</h2>
-  <div class="card">
-    <div class="row">
-      <input type="search" name="q" placeholder="gate code at harborview"
-             hx-get="/recall" hx-target="#recall" hx-trigger="keyup changed delay:350ms, search">
+  <section aria-labelledby="ask-h">
+    <h2 id="ask-h">Ask me anything</h2>
+    <div class="card">
+      <label class="visually-hidden" for="ask">Search what I know about your business</label>
+      <input type="search" name="q" id="ask" autocomplete="off"
+             placeholder="gate code at harborview"
+             data-search="/recall" data-target="#recall">
+      <div id="recall" role="region" aria-live="polite" aria-label="Search results"></div>
     </div>
-    <div id="recall"></div>
-  </div>
-
-  {{if not .Semantic}}
-    <p class="muted" style="font-size:13px">Semantic search is off — recall is using literal matching. Set a VOYAGE_API_KEY to turn it on.</p>
-  {{end}}
-</div></body></html>
+  </section>
+{{template "shellend" .}}
+</body></html>

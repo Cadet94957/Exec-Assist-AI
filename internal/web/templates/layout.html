@@ -1,30 +1,103 @@
 {{define "head"}}
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="manifest" href="/static/manifest.json">
+<link rel="icon" href="/static/favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<meta name="application-name" content="Exec Assist">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Exec Assist">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#f7f6f3" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#171614" media="(prefers-color-scheme: dark)">
+<script src="/static/app.js" defer></script>
 <style>
   :root {
     --bg: #f7f6f3; --card: #fff; --ink: #1c1b19; --muted: #6b6862;
     --line: #e3e0d9; --accent: #b4551f; --accent-soft: #fdf1e8;
+    --rail: #efece6; --ok: #2f9e6d;
+    /* Measured: #b4551f on #fdf1e8 is 4.44 and fails AA. #8f4318 is 6.34. */
+    --accent-ink: #8f4318; --on-accent: #ffffff;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #171614; --card: #1f1e1b; --ink: #ece9e3; --muted: #9a958c;
       --line: #302e2a; --accent: #e08a4f; --accent-soft: #2a201a;
+      --rail: #131211; --ok: #4cb98a;
+      /* White on the light dark-mode accent is 2.65. Dark ink on it is 6.46. */
+      --accent-ink: #e08a4f; --on-accent: #221a14;
     }
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
     font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
-  header.bar {
-    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
-    padding-bottom: 16px; margin-bottom: 24px; border-bottom: 1px solid var(--line);
+
+  /* Desktop app shell: a persistent rail beside the content, the way an
+     application looks — not a page with a header on top of it. */
+  .app { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100%; }
+  .rail {
+    background: var(--rail); border-right: 1px solid var(--line);
+    padding: 20px 14px calc(16px + env(safe-area-inset-bottom));
   }
-  header.bar h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
-  header.bar nav { margin-left: auto; display: flex; gap: 14px; align-items: baseline; }
+  .railinner {
+    position: sticky; top: 20px;
+    display: flex; flex-direction: column; gap: 4px;
+    min-height: calc(100vh - 40px);
+  }
+  .brand { display: flex; align-items: center; gap: 9px; padding: 2px 8px 18px; }
+  .brand img { width: 26px; height: 26px; border-radius: 6px; }
+  .brand .who { min-width: 0; }
+  .brand .name {
+    font-size: 14px; font-weight: 650; letter-spacing: -0.01em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .brand .trade { font-size: 12px; color: var(--muted); }
+  .rail nav { display: flex; flex-direction: column; gap: 2px; }
+  a.navlink {
+    display: block; padding: 9px 10px; border-radius: 7px;
+    color: var(--ink); text-decoration: none; font-size: 14px; font-weight: 500;
+  }
+  a.navlink:hover { background: var(--accent-soft); text-decoration: none; }
+  a.navlink.on { background: var(--accent-soft); color: var(--accent-ink); }
+  .railfoot { margin-top: auto; display: flex; flex-direction: column; gap: 6px; }
+  .railfoot button, #install-app {
+    width: 100%; text-align: left; padding: 9px 10px; border-radius: 7px;
+    background: none; border: 0; color: var(--muted); font-size: 14px; cursor: pointer;
+  }
+  #install-app { color: var(--accent-ink); font-weight: 550; }
+  .railfoot button:hover, #install-app:hover { background: var(--accent-soft); }
+
+  main.wrap { max-width: 820px; padding: 28px 24px calc(64px + env(safe-area-inset-bottom)); }
+
+  /* Below tablet width the rail becomes an ordinary top bar. */
+  @media (max-width: 860px) {
+    .app { grid-template-columns: 1fr; }
+    .rail { border-right: 0; border-bottom: 1px solid var(--line); padding: 12px 16px; }
+    .railinner {
+      position: static; min-height: 0; flex-direction: row; align-items: center;
+      flex-wrap: wrap; gap: 10px;
+    }
+    .brand { padding: 0; margin-right: auto; }
+    .rail nav { flex-direction: row; gap: 6px; }
+    .railfoot { margin-top: 0; flex-direction: row; }
+    .railfoot button, #install-app { width: auto; }
+    main.wrap { padding: 20px 16px 64px; }
+  }
+
+  .skip {
+    position: absolute; left: -9999px; top: 0; z-index: 10;
+    background: var(--accent); color: var(--on-accent); padding: 10px 16px; border-radius: 0 0 7px 0;
+  }
+  .skip:focus { left: 0; text-decoration: none; }
+  .visually-hidden {
+    position: absolute; width: 1px; height: 1px; margin: -1px;
+    padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+  main.wrap:focus { outline: none; }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
   .muted { color: var(--muted); }
@@ -37,32 +110,46 @@
     background: var(--card); border: 1px solid var(--line); border-radius: 10px;
     padding: 12px 16px; flex: 1 1 120px;
   }
-  .stat .n { font-size: 22px; font-weight: 650; letter-spacing: -0.02em; }
+  .stat .n { font-size: 22px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
   .stat .l { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  h1.page { font-size: 20px; margin: 0 0 18px; letter-spacing: -0.01em; }
   h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 28px 0 10px; }
   .fact { border-left: 3px solid var(--accent); padding-left: 12px; margin-bottom: 16px; }
+  .fact.pending { border-left-color: var(--muted); }
   .fact .label { font-weight: 600; }
   .fact .why { color: var(--muted); font-size: 14px; margin-top: 2px; }
+  .review { display: flex; gap: 16px; margin-top: 8px; }
+  .review form { display: inline; margin: 0; }
   .kind {
     display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
-    background: var(--accent-soft); color: var(--accent);
+    background: var(--accent-soft); color: var(--accent-ink);
     border-radius: 4px; padding: 1px 6px; margin-left: 6px; vertical-align: 1px;
   }
   input[type=text], input[type=password], input[type=search] {
-    width: 100%; padding: 9px 11px; border: 1px solid var(--line);
+    width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--line);
     border-radius: 7px; background: var(--card); color: var(--ink); font-size: 15px;
   }
   button {
-    padding: 9px 16px; border: 0; border-radius: 7px; background: var(--accent);
-    color: #fff; font-size: 15px; font-weight: 550; cursor: pointer;
+    min-height: 44px; padding: 10px 16px; border: 0; border-radius: 7px;
+    background: var(--accent); color: var(--on-accent); font-size: 15px; font-weight: 550; cursor: pointer;
   }
+  button.link {
+    background: none; border: 0; padding: 0; min-height: 0; font-size: 14px;
+    color: var(--accent-ink); cursor: pointer; font-weight: 500;
+  }
+  button.link.quiet { color: var(--muted); font-weight: 400; }
+  .btnlink {
+    display: inline-block; background: var(--accent); color: var(--on-accent); padding: 8px 14px;
+    border-radius: 7px; font-size: 14px; font-weight: 550;
+  }
+  .btnlink:hover { text-decoration: none; opacity: .92; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .row { display: flex; gap: 8px; }
   .row input { flex: 1; }
   .empty { color: var(--muted); font-style: italic; }
-  .err { background: var(--accent-soft); color: var(--accent); padding: 10px 12px; border-radius: 7px; margin-bottom: 14px; }
-  .notice {
-    background: var(--accent-soft); color: var(--accent);
-    padding: 10px 14px; border-radius: 7px; margin-bottom: 16px; font-size: 14px;
+  .err, .notice {
+    background: var(--accent-soft); color: var(--accent-ink);
+    padding: 10px 13px; border-radius: 7px; margin-bottom: 14px; font-size: 14px;
   }
   .calbar {
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
@@ -72,37 +159,61 @@
   .calactions { margin-left: auto; display: flex; gap: 14px; align-items: center; }
   .calactions form { display: inline; margin: 0; }
   .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-  .dot.on { background: #2f9e6d; }
-  .dot.off { background: var(--line-strong, #b9b5ac); }
-  button.link {
-    background: none; border: 0; padding: 0; font-size: 14px;
-    color: var(--accent); cursor: pointer; font-weight: 500;
+  .dot.on { background: var(--ok); }
+  .dot.off { background: var(--line); }
+  .syncerr { color: var(--accent-ink); font-size: 13px; margin: 0 0 12px; }
+  .nudge {
+    background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 7px; padding: 11px 14px; margin: 0 0 18px; font-size: 14px;
   }
-  button.link.quiet { color: var(--muted); font-weight: 400; }
-  .btnlink {
-    background: var(--accent); color: #fff; padding: 7px 14px;
-    border-radius: 7px; font-size: 14px; font-weight: 550;
-  }
-  .btnlink:hover { text-decoration: none; opacity: .92; }
-  .syncerr { color: var(--accent); font-size: 13px; margin: 0 0 12px; }
-  .fact.pending { border-left-color: var(--muted); }
-  .review { display: flex; gap: 16px; margin-top: 8px; }
-  .review form { display: inline; margin: 0; }
+  .small { font-size: 14px; }
+  .muted.small { font-size: 13px; }
+  .where { display: block; color: var(--muted); font-size: 14px; }
+  .forget { margin-top: 6px; }
+  .filters { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 14px; margin: 0 0 12px; }
+  .filters a { text-transform: capitalize; }
+  .filters a[aria-current] { color: var(--ink); font-weight: 600; }
+  dl.kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 20px; margin: 0; font-size: 14px; }
+  dl.kv dt { color: var(--muted); }
+  dl.kv dd { margin: 0; }
+  section + section { margin-top: 4px; }
+  .fact p { margin: 0; }
   ul.stops { list-style: none; padding: 0; margin: 0; }
   ul.stops li { padding: 10px 0; border-bottom: 1px solid var(--line); }
   ul.stops li:last-child { border-bottom: 0; }
   .when { font-variant-numeric: tabular-nums; font-weight: 600; margin-right: 10px; }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
 </style>
 {{end}}
 
-{{define "nav"}}
-<header class="bar">
-  <h1>{{.Tenant.Name}}</h1>
-  <span class="muted">{{.Tenant.Trade}}</span>
-  <nav>
-    <a href="/">Today</a>
-    <a href="/learned">What I've learned</a>
-    <form method="post" action="/logout" style="display:inline"><button style="background:none;color:var(--muted);padding:0;font-size:15px;font-weight:400">Sign out</button></form>
-  </nav>
-</header>
+{{define "shell"}}
+<div class="app">
+  <header class="rail">
+    <div class="railinner">
+    <div class="brand">
+      <img src="/static/icon-192.png" alt="" width="26" height="26">
+      <div class="who">
+        <div class="name">{{.Tenant.Name}}</div>
+        <div class="trade">{{.Tenant.Trade}}</div>
+      </div>
+    </div>
+    <nav aria-label="Main">
+      <a class="navlink {{if eq .Nav "today"}}on{{end}}" href="/"
+         {{if eq .Nav "today"}}aria-current="page"{{end}}>Today</a>
+      <a class="navlink {{if eq .Nav "settings"}}on{{end}}" href="/settings"
+         {{if eq .Nav "settings"}}aria-current="page"{{end}}>Settings</a>
+    </nav>
+    <div class="railfoot">
+      <button type="button" id="install-app" hidden>Install this app</button>
+    </div>
+    </div>
+  </header>
+  <main class="wrap" id="main" tabindex="-1">
+{{end}}
+
+{{define "shellend"}}
+  </main>
+</div>
 {{end}}

@@ -1,14 +1,14 @@
 <!doctype html>
 <html lang="en"><head>{{template "head" .}}<title>Sign in</title></head>
-<body><div class="wrap" style="max-width:380px;padding-top:72px">
+<body><main class="wrap" style="max-width:380px;margin:0 auto;padding-top:72px">
   <h1 style="font-size:20px;margin:0 0 4px">Your assistant</h1>
   <p class="muted" style="margin:0 0 24px">Sign in to see today.</p>
   {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
   <form method="post" action="/login" class="card">
-    <label class="muted" style="font-size:13px">Account</label>
-    <input type="text" name="tenant" autocomplete="username" autocapitalize="off" autocorrect="off" required style="margin:4px 0 14px">
-    <label class="muted" style="font-size:13px">Access key</label>
-    <input type="password" name="key" autocomplete="current-password" required style="margin:4px 0 18px">
+    <label class="muted" style="font-size:13px" for="tenant">Account</label>
+    <input type="text" name="tenant" id="tenant" autocomplete="username" autocapitalize="off" autocorrect="off" required style="margin:4px 0 14px">
+    <label class="muted" style="font-size:13px" for="key">Access key</label>
+    <input type="password" name="key" id="key" autocomplete="current-password" required style="margin:4px 0 18px">
     <button type="submit" style="width:100%">Sign in</button>
   </form>
-</div></body></html>
+</main></body></html>

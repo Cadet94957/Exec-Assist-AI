@@ -349,7 +349,7 @@ func backfill(args []string) error {
 	if ran == 0 {
 		return errors.New("no matching tenant")
 	}
-	fmt.Println("\nAnything new is waiting for review on the \"What I've learned\" page.")
+	fmt.Println("\nAnything new is waiting for review under Settings.")
 	return nil
 }
 

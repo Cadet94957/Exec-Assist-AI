@@ -1,0 +1,11 @@
+{{define "memoryitem"}}
+<div class="fact">
+  <p class="label">{{.Label}} <span class="kind">{{.Kind}}</span></p>
+  {{if .Detail}}<p class="small">{{.Detail}}</p>{{end}}
+  <p class="why">{{.WhyMatters}}</p>
+  <form method="post" action="/memory/forget" class="forget">
+    <input type="hidden" name="id" value="{{.ID}}">
+    <button class="link quiet">Forget this</button>
+  </form>
+</div>
+{{end}}
