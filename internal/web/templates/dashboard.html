@@ -3,6 +3,8 @@
 <body><div class="wrap">
   {{template "nav" .}}
 
+  {{if .Notice}}<div class="notice">{{.Notice}}</div>{{end}}
+
   <div class="stats">
     <div class="stat"><div class="n">{{.Stats.OpenJobs}}</div><div class="l">Open jobs</div></div>
     <div class="stat"><div class="n">{{len .Appointments}}</div><div class="l">Stops today</div></div>
@@ -12,6 +14,30 @@
 
   <h2>{{.Today}}</h2>
   <div class="card">
+    <div class="calbar">
+      {{if .GoogleConnected}}
+        <span class="dot on"></span>
+        <span>Calendar connected{{if .Connection.Account}} &middot; {{.Connection.Account}}{{end}}</span>
+        <span class="muted">synced {{ago .Connection.LastSync}}</span>
+        <span class="calactions">
+          <form method="post" action="/connect/google/sync"><button class="link">Sync now</button></form>
+          <form method="post" action="/connect/google/disconnect"
+                onsubmit="return confirm('Disconnect Google Calendar? The appointments it brought in will be removed.')">
+            <button class="link quiet">Disconnect</button>
+          </form>
+        </span>
+      {{else if .GoogleReady}}
+        <span class="dot off"></span>
+        <span>No calendar connected yet.</span>
+        <span class="calactions"><a class="btnlink" href="/connect/google">Connect Google Calendar</a></span>
+      {{else}}
+        <span class="dot off"></span>
+        <span class="muted">Calendar connection isn't configured on this server.</span>
+      {{end}}
+    </div>
+    {{if .Connection.LastError.Valid}}
+      <p class="syncerr">Last sync had trouble. It will keep retrying.</p>
+    {{end}}
     {{if .Appointments}}
       <ul class="stops">
       {{range .Appointments}}
@@ -22,7 +48,11 @@
       {{end}}
       </ul>
     {{else}}
-      <p class="empty">Nothing on the calendar yet. Connect Google Calendar to fill this in.</p>
+      {{if .GoogleConnected}}
+        <p class="empty">Nothing scheduled today.</p>
+      {{else}}
+        <p class="empty">Nothing on the calendar yet. Connect Google Calendar to fill this in.</p>
+      {{end}}
     {{end}}
   </div>
 

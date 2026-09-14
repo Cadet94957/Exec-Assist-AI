@@ -22,9 +22,11 @@ import (
 	"syscall"
 	"time"
 
+	googleconnect "github.com/Cadet94957/Exec-Assist-AI/internal/connect/google"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/embed"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/ledger"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/memory"
+	"github.com/Cadet94957/Exec-Assist-AI/internal/secrets"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/tenant"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/web"
 )
@@ -83,7 +85,35 @@ func serve() error {
 	}
 	defer tenants.Close()
 
-	site, err := web.New(tenants, secret, os.Getenv("INSECURE_COOKIES") != "1")
+	gcfg := googleconnect.Config{
+		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+		RedirectURL:  os.Getenv("GOOGLE_REDIRECT_URL"),
+	}
+
+	// A missing TOKEN_KEY is not fatal — the rest of the product works — but
+	// it does mean no third-party credential can be stored, so say so once
+	// rather than failing later at the moment someone tries to connect.
+	var box *secrets.Box
+	if key := os.Getenv("TOKEN_KEY"); key != "" {
+		box, err = secrets.NewBox(key)
+		if err != nil {
+			return err
+		}
+	} else {
+		log.Print("[connect] TOKEN_KEY is unset — calendar connection is disabled (generate one with: openssl rand -hex 32)")
+	}
+
+	switch {
+	case !gcfg.Configured():
+		log.Print("[google] GOOGLE_CLIENT_ID/SECRET/REDIRECT_URL not all set — calendar connection is disabled")
+	case box == nil:
+		log.Print("[google] credentials present but TOKEN_KEY is not — calendar connection is disabled")
+	default:
+		log.Print("[google] calendar connection enabled")
+	}
+
+	site, err := web.New(tenants, secret, os.Getenv("INSECURE_COOKIES") != "1", gcfg, box)
 	if err != nil {
 		return err
 	}
@@ -100,6 +130,13 @@ func serve() error {
 	// and so every tenant's WAL gets checkpointed back into its .db file.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Keep every connected calendar fresh in the background. Without this a
+	// contractor only sees changes when they happen to open the dashboard,
+	// and the 6am brief would be built from whatever was last fetched.
+	if gcfg.Configured() && box != nil {
+		go syncLoop(ctx, gcfg, tenants, box)
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -122,6 +159,59 @@ func serve() error {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	return nil
+}
+
+// syncInterval is how often connected calendars are re-fetched. Frequent
+// enough that a booking made this morning is in this afternoon's plan, and far
+// under Google's per-user quota.
+const syncInterval = 10 * time.Minute
+
+// syncLoop refreshes every connected tenant's calendar until the server stops.
+func syncLoop(ctx context.Context, cfg googleconnect.Config, tenants *tenant.Manager, box *secrets.Box) {
+	ticker := time.NewTicker(syncInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			syncAll(ctx, cfg, tenants, box)
+		}
+	}
+}
+
+func syncAll(ctx context.Context, cfg googleconnect.Config, tenants *tenant.Manager, box *secrets.Box) {
+	all, err := tenants.List()
+	if err != nil {
+		log.Printf("[google] list tenants: %v", err)
+		return
+	}
+
+	for _, t := range all {
+		if ctx.Err() != nil {
+			return
+		}
+		stores, err := tenants.Stores(t.ID)
+		if err != nil {
+			log.Printf("[google] open %s: %v", t.ID, err)
+			continue
+		}
+
+		// One slow tenant must not stall every other tenant's sync.
+		callCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		res, err := googleconnect.Sync(callCtx, cfg, stores.Ledger, box, time.Now())
+		cancel()
+
+		switch {
+		case errors.Is(err, ledger.ErrNoConnection):
+			// Most tenants simply have not connected a calendar.
+		case err != nil:
+			log.Printf("[google] sync %s: %v", t.ID, err)
+		case res.Fetched > 0 || res.Removed > 0:
+			log.Printf("[google] sync %s: %d events, %d removed", t.ID, res.Fetched, res.Removed)
+		}
+	}
 }
 
 // startEmbedShim binds a loopback listener, serves the Ollama-shaped endpoint

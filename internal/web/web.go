@@ -8,6 +8,7 @@ package web
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"embed"
 	"encoding/hex"
 	"errors"
@@ -15,10 +16,14 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
+	"github.com/Cadet94957/Exec-Assist-AI/internal/connect/google"
+	"github.com/Cadet94957/Exec-Assist-AI/internal/ledger"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/memory"
+	"github.com/Cadet94957/Exec-Assist-AI/internal/secrets"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/tenant"
 )
 
@@ -33,20 +38,47 @@ type Server struct {
 	templates *template.Template
 	secret    []byte
 	secure    bool
+	google    google.Config
+	secrets   *secrets.Box
 }
 
 // New builds the server. secret signs session cookies; secure marks them
 // Secure, which should be on everywhere except local development over HTTP.
-func New(tenants *tenant.Manager, secret []byte, secure bool) (*Server, error) {
+// google and box may be zero — the calendar feature then reports itself as
+// unavailable rather than offering a button that fails.
+func New(tenants *tenant.Manager, secret []byte, secure bool, gcfg google.Config, box *secrets.Box) (*Server, error) {
 	funcs := template.FuncMap{
 		"money": func(cents int64) string { return fmt.Sprintf("$%.2f", float64(cents)/100) },
 		"time":  func(t time.Time, loc *time.Location) string { return t.In(loc).Format("Mon 3:04pm") },
+		"ago": func(t sql.NullTime) string {
+			if !t.Valid {
+				return "never"
+			}
+			d := time.Since(t.Time)
+			switch {
+			case d < time.Minute:
+				return "just now"
+			case d < time.Hour:
+				return fmt.Sprintf("%d min ago", int(d.Minutes()))
+			case d < 24*time.Hour:
+				return fmt.Sprintf("%d hr ago", int(d.Hours()))
+			default:
+				return fmt.Sprintf("%d days ago", int(d.Hours()/24))
+			}
+		},
 	}
 	tmpl, err := template.New("").Funcs(funcs).ParseFS(templateFS, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("web: parse templates: %w", err)
 	}
-	return &Server{tenants: tenants, templates: tmpl, secret: secret, secure: secure}, nil
+	return &Server{
+		tenants:   tenants,
+		templates: tmpl,
+		secret:    secret,
+		secure:    secure,
+		google:    gcfg,
+		secrets:   box,
+	}, nil
 }
 
 // Routes returns the mux for the public listener.
@@ -59,7 +91,17 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /", s.authed(s.handleDashboard))
 	mux.Handle("GET /learned", s.authed(s.handleLearned))
 	mux.Handle("GET /recall", s.authed(s.handleRecall))
+	mux.Handle("GET /connect/google", s.authed(s.handleConnectGoogle))
+	mux.Handle("GET /connect/google/callback", s.authed(s.handleGoogleCallback))
+	mux.Handle("POST /connect/google/sync", s.authed(s.handleSyncGoogle))
+	mux.Handle("POST /connect/google/disconnect", s.authed(s.handleDisconnectGoogle))
 	return mux
+}
+
+// notice redirects home carrying a short message for the contractor. Keeping
+// it in the query string avoids a flash-session store for what is one sentence.
+func (s *Server) notice(w http.ResponseWriter, r *http.Request, msg string) {
+	http.Redirect(w, r, "/?notice="+url.QueryEscape(msg), http.StatusSeeOther)
 }
 
 // authed wraps a handler so it only runs for a signed-in tenant.
@@ -147,14 +189,24 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, t tenan
 		return
 	}
 
+	conn, connErr := stores.Ledger.GetConnection(google.Provider)
+	connected := connErr == nil
+	if connErr != nil && !errors.Is(connErr, ledger.ErrNoConnection) {
+		log.Printf("[web] read calendar connection for %s: %v", t.ID, connErr)
+	}
+
 	s.render(w, "dashboard.html", map[string]any{
-		"Tenant":       t,
-		"Loc":          loc,
-		"Stats":        stats,
-		"Appointments": appts,
-		"FactCount":    live,
-		"Semantic":     stores.Memory.SemanticSearchAvailable(),
-		"Today":        dayStart.Format("Monday, 2 January"),
+		"Tenant":          t,
+		"Loc":             loc,
+		"Stats":           stats,
+		"Appointments":    appts,
+		"FactCount":       live,
+		"Semantic":        stores.Memory.SemanticSearchAvailable(),
+		"Today":           dayStart.Format("Monday, 2 January"),
+		"Notice":          r.URL.Query().Get("notice"),
+		"GoogleReady":     s.google.Configured() && s.secrets != nil,
+		"GoogleConnected": connected,
+		"Connection":      conn,
 	})
 }
 

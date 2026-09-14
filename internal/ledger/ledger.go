@@ -128,6 +128,17 @@ CREATE TABLE IF NOT EXISTS events (
     processed_at DATETIME
 );
 CREATE INDEX IF NOT EXISTS idx_events_unprocessed ON events(received_at) WHERE processed_at IS NULL;
+
+-- Linked third-party accounts. The token column holds an encrypted oauth2
+-- token; this database never holds the plaintext.
+CREATE TABLE IF NOT EXISTS connections (
+    provider     TEXT PRIMARY KEY,
+    account      TEXT,
+    token        BLOB NOT NULL,
+    connected_at DATETIME NOT NULL,
+    last_sync_at DATETIME,
+    last_error   TEXT
+);
 `
 
 func (s *Store) migrate() error {

@@ -60,6 +60,31 @@
   .row input { flex: 1; }
   .empty { color: var(--muted); font-style: italic; }
   .err { background: var(--accent-soft); color: var(--accent); padding: 10px 12px; border-radius: 7px; margin-bottom: 14px; }
+  .notice {
+    background: var(--accent-soft); color: var(--accent);
+    padding: 10px 14px; border-radius: 7px; margin-bottom: 16px; font-size: 14px;
+  }
+  .calbar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    font-size: 14px; padding-bottom: 14px; margin-bottom: 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .calactions { margin-left: auto; display: flex; gap: 14px; align-items: center; }
+  .calactions form { display: inline; margin: 0; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .dot.on { background: #2f9e6d; }
+  .dot.off { background: var(--line-strong, #b9b5ac); }
+  button.link {
+    background: none; border: 0; padding: 0; font-size: 14px;
+    color: var(--accent); cursor: pointer; font-weight: 500;
+  }
+  button.link.quiet { color: var(--muted); font-weight: 400; }
+  .btnlink {
+    background: var(--accent); color: #fff; padding: 7px 14px;
+    border-radius: 7px; font-size: 14px; font-weight: 550;
+  }
+  .btnlink:hover { text-decoration: none; opacity: .92; }
+  .syncerr { color: var(--accent); font-size: 13px; margin: 0 0 12px; }
   ul.stops { list-style: none; padding: 0; margin: 0; }
   ul.stops li { padding: 10px 0; border-bottom: 1px solid var(--line); }
   ul.stops li:last-child { border-bottom: 0; }
