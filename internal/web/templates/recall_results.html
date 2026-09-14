@@ -1,0 +1,15 @@
+{{if .Query}}
+  {{if .Results}}
+    <div style="margin-top:14px">
+    {{range .Results}}
+      <div class="fact">
+        <div class="label">{{.Label}}<span class="kind">{{.Kind}}</span></div>
+        {{if .Detail}}<div style="font-size:14px">{{.Detail}}</div>{{end}}
+        <div class="why">{{.WhyMatters}}</div>
+      </div>
+    {{end}}
+    </div>
+  {{else}}
+    <p class="empty" style="margin-top:14px">Nothing on that yet.</p>
+  {{end}}
+{{end}}

@@ -1,0 +1,10 @@
+# build output
+/bin/
+/exec-assist
+
+# local runtime data — per-tenant SQLite lives here
+/data/
+
+# env
+.env
+.env.local

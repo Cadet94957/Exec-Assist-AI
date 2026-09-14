@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head>{{template "head" .}}<title>Today</title></head>
+<body><div class="wrap">
+  {{template "nav" .}}
+
+  <div class="stats">
+    <div class="stat"><div class="n">{{.Stats.OpenJobs}}</div><div class="l">Open jobs</div></div>
+    <div class="stat"><div class="n">{{len .Appointments}}</div><div class="l">Stops today</div></div>
+    <div class="stat"><div class="n">{{money .Stats.UnpaidCents}}</div><div class="l">Outstanding</div></div>
+    <div class="stat"><div class="n">{{.FactCount}}</div><div class="l">Things learned</div></div>
+  </div>
+
+  <h2>{{.Today}}</h2>
+  <div class="card">
+    {{if .Appointments}}
+      <ul class="stops">
+      {{range .Appointments}}
+        <li>
+          <span class="when">{{time .StartsAt $.Loc}}</span>{{.Title}}
+          {{if .Location.Valid}}<div class="muted" style="font-size:14px;margin-left:0">{{.Location.String}}</div>{{end}}
+        </li>
+      {{end}}
+      </ul>
+    {{else}}
+      <p class="empty">Nothing on the calendar yet. Connect Google Calendar to fill this in.</p>
+    {{end}}
+  </div>
+
+  <h2>Ask me anything</h2>
+  <div class="card">
+    <div class="row">
+      <input type="search" name="q" placeholder="gate code at harborview"
+             hx-get="/recall" hx-target="#recall" hx-trigger="keyup changed delay:350ms, search">
+    </div>
+    <div id="recall"></div>
+  </div>
+
+  {{if not .Semantic}}
+    <p class="muted" style="font-size:13px">Semantic search is off — recall is using literal matching. Set a VOYAGE_API_KEY to turn it on.</p>
+  {{end}}
+</div></body></html>

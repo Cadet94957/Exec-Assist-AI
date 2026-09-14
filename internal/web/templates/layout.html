@@ -1,0 +1,80 @@
+{{define "head"}}
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+<style>
+  :root {
+    --bg: #f7f6f3; --card: #fff; --ink: #1c1b19; --muted: #6b6862;
+    --line: #e3e0d9; --accent: #b4551f; --accent-soft: #fdf1e8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171614; --card: #1f1e1b; --ink: #ece9e3; --muted: #9a958c;
+      --line: #302e2a; --accent: #e08a4f; --accent-soft: #2a201a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
+  header.bar {
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+    padding-bottom: 16px; margin-bottom: 24px; border-bottom: 1px solid var(--line);
+  }
+  header.bar h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  header.bar nav { margin-left: auto; display: flex; gap: 14px; align-items: baseline; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .muted { color: var(--muted); }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 16px; margin-bottom: 14px;
+  }
+  .stats { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+  .stat {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 16px; flex: 1 1 120px;
+  }
+  .stat .n { font-size: 22px; font-weight: 650; letter-spacing: -0.02em; }
+  .stat .l { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 28px 0 10px; }
+  .fact { border-left: 3px solid var(--accent); padding-left: 12px; margin-bottom: 16px; }
+  .fact .label { font-weight: 600; }
+  .fact .why { color: var(--muted); font-size: 14px; margin-top: 2px; }
+  .kind {
+    display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+    background: var(--accent-soft); color: var(--accent);
+    border-radius: 4px; padding: 1px 6px; margin-left: 6px; vertical-align: 1px;
+  }
+  input[type=text], input[type=password], input[type=search] {
+    width: 100%; padding: 9px 11px; border: 1px solid var(--line);
+    border-radius: 7px; background: var(--card); color: var(--ink); font-size: 15px;
+  }
+  button {
+    padding: 9px 16px; border: 0; border-radius: 7px; background: var(--accent);
+    color: #fff; font-size: 15px; font-weight: 550; cursor: pointer;
+  }
+  .row { display: flex; gap: 8px; }
+  .row input { flex: 1; }
+  .empty { color: var(--muted); font-style: italic; }
+  .err { background: var(--accent-soft); color: var(--accent); padding: 10px 12px; border-radius: 7px; margin-bottom: 14px; }
+  ul.stops { list-style: none; padding: 0; margin: 0; }
+  ul.stops li { padding: 10px 0; border-bottom: 1px solid var(--line); }
+  ul.stops li:last-child { border-bottom: 0; }
+  .when { font-variant-numeric: tabular-nums; font-weight: 600; margin-right: 10px; }
+</style>
+{{end}}
+
+{{define "nav"}}
+<header class="bar">
+  <h1>{{.Tenant.Name}}</h1>
+  <span class="muted">{{.Tenant.Trade}}</span>
+  <nav>
+    <a href="/">Today</a>
+    <a href="/learned">What I've learned</a>
+    <form method="post" action="/logout" style="display:inline"><button style="background:none;color:var(--muted);padding:0;font-size:15px;font-weight:400">Sign out</button></form>
+  </nav>
+</header>
+{{end}}

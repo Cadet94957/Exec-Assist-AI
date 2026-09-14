@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en"><head>{{template "head" .}}<title>What I've learned</title></head>
+<body><div class="wrap">
+  {{template "nav" .}}
+
+  <p class="muted" style="margin-top:0">Everything here came from your calendar, your email and your own corrections — ranked by how much the rest of what I know depends on it.</p>
+
+  {{if .Domains}}
+    <p style="font-size:14px">
+      <a href="/learned">All</a>
+      {{range .Domains}} &middot; <a href="/learned?domain={{.}}">{{.}}</a>{{end}}
+    </p>
+  {{end}}
+
+  {{if .Important}}
+    <h2>What I lean on most</h2>
+    {{range .Important}}
+      <div class="fact">
+        <div class="label">{{.Label}}<span class="kind">{{.Kind}}</span></div>
+        {{if .Detail}}<div style="font-size:14px">{{.Detail}}</div>{{end}}
+        <div class="why">{{.WhyMatters}}</div>
+      </div>
+    {{end}}
+  {{end}}
+
+  {{if .Recent}}
+    <h2>{{if .Important}}Also worth knowing{{else}}What I know so far{{end}}</h2>
+    {{range .Recent}}
+      <div class="fact">
+        <div class="label">{{.Label}}<span class="kind">{{.Kind}}</span></div>
+        {{if .Detail}}<div style="font-size:14px">{{.Detail}}</div>{{end}}
+        <div class="why">{{.WhyMatters}}</div>
+      </div>
+    {{end}}
+  {{end}}
+
+  {{if eq .Total 0}}
+    <div class="card"><p class="empty" style="margin:0">I haven't learned anything yet. Once your calendar and email are connected I'll start filling this in — and I'll check the important ones with you before I rely on them.</p></div>
+  {{end}}
+</div></body></html>

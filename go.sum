@@ -1,0 +1,6 @@
+github.com/asg017/sqlite-vec-go-bindings v0.1.6 h1:Nx0jAzyS38XpkKznJ9xQjFXz2X9tI7KqjwVxV8RNoww=
+github.com/asg017/sqlite-vec-go-bindings v0.1.6/go.mod h1:A8+cTt/nKFsYCQF6OgzSNpKZrzNo5gQsXBTfsXHXY0Q=
+github.com/corbym/memoryweb v1.54.16 h1:qAZ4/z0BIjxW/x0lDjp6uZvZ0qoMiM1irJeyI+Avls0=
+github.com/corbym/memoryweb v1.54.16/go.mod h1:o0Y6rLli958fVRh8ZpGYvkvgqhVWPUxcwW/r6Jt7ruA=
+github.com/mattn/go-sqlite3 v1.14.22 h1:2gZY6PC6kBnID23Tichd1K+Z0oS6nE/XwU+Vz/5o4kU=
+github.com/mattn/go-sqlite3 v1.14.22/go.mod h1:Uh1q+B4BYcTPb+yiD3kU8Ct7aC0hY9fxUwlHK0RXw+Y=
