@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/Cadet94957/Exec-Assist-AI/internal/events"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/ledger"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/secrets"
 )
@@ -28,6 +29,8 @@ const (
 // Result reports what one sync changed, for logs and the dashboard.
 type Result struct {
 	Fetched int
+	Created int
+	Changed int
 	Removed int
 }
 
@@ -68,25 +71,86 @@ func sync(ctx context.Context, cfg Config, store *ledger.Store, box *secrets.Box
 	from := now.Add(-WindowPast)
 	to := now.Add(WindowFuture)
 
-	events, err := client.Events(ctx, "primary", from, to)
+	fetched, err := client.Events(ctx, "primary", from, to)
 	if err != nil {
 		return Result{}, err
 	}
 
-	keep := make([]string, 0, len(events))
-	for _, ev := range events {
-		if err := store.UpsertAppointment(toAppointment(ev)); err != nil {
-			return Result{}, err
+	// What the ledger currently believes, so the sync can tell what actually
+	// changed rather than blindly writing the present state over it.
+	existing, err := store.Between(from, to)
+	if err != nil {
+		return Result{}, err
+	}
+	known := make(map[string]ledger.Appointment, len(existing))
+	for _, a := range existing {
+		if a.Source == Provider && a.ExternalID.Valid {
+			known[a.ExternalID.String] = a
 		}
+	}
+
+	res := Result{Fetched: len(fetched)}
+	keep := make([]string, 0, len(fetched))
+
+	for _, ev := range fetched {
 		keep = append(keep, ev.ID)
+		appt := toAppointment(ev)
+
+		prior, seen := known[ev.ID]
+		switch {
+		case !seen:
+			if err := emit(store, newAppointmentEvent(events.AppointmentCreated, ev, nil), now); err != nil {
+				return res, err
+			}
+			res.Created++
+		case differs(prior, appt):
+			before := &events.AppointmentBefore{
+				Title:    prior.Title,
+				StartsAt: prior.StartsAt,
+				Location: prior.Location.String,
+			}
+			if err := emit(store, newAppointmentEvent(events.AppointmentChanged, ev, before), now); err != nil {
+				return res, err
+			}
+			res.Changed++
+		}
+
+		if err := store.UpsertAppointment(appt); err != nil {
+			return res, err
+		}
 	}
 
 	// Anything still in the window that Google no longer returns was deleted
 	// upstream. Reconciling against the fetched set is more robust than
 	// tracking tombstones, which the API only surfaces on incremental syncs.
+	fetchedIDs := make(map[string]bool, len(keep))
+	for _, id := range keep {
+		fetchedIDs[id] = true
+	}
+	for extID, a := range known {
+		if fetchedIDs[extID] {
+			continue
+		}
+		cancelled := events.Event{
+			ID:         Provider + ":cancelled:" + extID + ":" + a.StartsAt.UTC().Format(time.RFC3339),
+			Type:       events.AppointmentCancelled,
+			Source:     events.SourceGoogle,
+			OccurredAt: now.UTC(),
+			Appointment: &events.Appointment{
+				ExternalID: extID,
+				Title:      a.Title,
+				StartsAt:   a.StartsAt,
+				Location:   a.Location.String,
+			},
+		}
+		if err := emit(store, cancelled, now); err != nil {
+			return res, err
+		}
+	}
+
 	removed, err := store.PruneSourceWindow(Provider, from, to, keep)
 	if err != nil {
-		return Result{}, err
+		return res, err
 	}
 
 	// The access token may have been refreshed during the call. Persisting it
@@ -97,7 +161,54 @@ func sync(ctx context.Context, cfg Config, store *ledger.Store, box *secrets.Box
 		}
 	}
 
-	return Result{Fetched: len(events), Removed: removed}, nil
+	res.Removed = removed
+	return res, nil
+}
+
+// emit validates and stores a typed event before the ledger is changed, so the
+// record of what happened survives even if the write that follows fails.
+func emit(store *ledger.Store, e events.Event, now time.Time) error {
+	e.ReceivedAt = now.UTC()
+	return store.AppendEvent(e)
+}
+
+// newAppointmentEvent builds a typed event from a calendar entry. The id is
+// derived from the event and its start time so a redelivery is idempotent but
+// a genuine move still records as a new change.
+func newAppointmentEvent(t events.Type, ev Event, before *events.AppointmentBefore) events.Event {
+	payload := &events.Appointment{
+		ExternalID: ev.ID,
+		Title:      ev.Title,
+		StartsAt:   ev.Start,
+		Location:   ev.Location,
+		AllDay:     ev.AllDay,
+		Previous:   before,
+	}
+	if !ev.End.IsZero() {
+		end := ev.End
+		payload.EndsAt = &end
+	}
+	return events.Event{
+		ID:          fmt.Sprintf("%s:%s:%s:%s", Provider, t, ev.ID, ev.Start.UTC().Format(time.RFC3339)),
+		Type:        t,
+		Source:      events.SourceGoogle,
+		OccurredAt:  ev.Start.UTC(),
+		Appointment: payload,
+	}
+}
+
+// differs reports whether anything worth recording as a change has changed.
+func differs(prior ledger.Appointment, next ledger.Appointment) bool {
+	if !prior.StartsAt.Equal(next.StartsAt) {
+		return true
+	}
+	if prior.Title != next.Title {
+		return true
+	}
+	if prior.Location.String != next.Location.String {
+		return true
+	}
+	return false
 }
 
 // toAppointment maps a calendar event onto a ledger row. The Google event id

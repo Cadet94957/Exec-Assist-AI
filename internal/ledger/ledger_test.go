@@ -163,11 +163,17 @@ func TestStats(t *testing.T) {
 	}
 }
 
-func TestRecordEvent(t *testing.T) {
+// §15: untrusted inbound content is parked as data, not handed to anything
+// that can act on it.
+func TestRecordRaw(t *testing.T) {
 	s := open(t)
 
-	if err := s.RecordEvent("e1", "webhook", "booking", `{"customer":"Marriott"}`); err != nil {
-		t.Fatalf("record event: %v", err)
+	if err := s.RecordRaw("e1", "webhook", `{"customer":"Marriott"}`); err != nil {
+		t.Fatalf("record raw: %v", err)
+	}
+	// Redelivery must not double-count.
+	if err := s.RecordRaw("e1", "webhook", `{"customer":"Marriott"}`); err != nil {
+		t.Fatalf("redelivery: %v", err)
 	}
 
 	var count int

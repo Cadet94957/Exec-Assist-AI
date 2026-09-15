@@ -2,6 +2,7 @@ package google_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Cadet94957/Exec-Assist-AI/internal/connect/google"
+	"github.com/Cadet94957/Exec-Assist-AI/internal/events"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/ledger"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/secrets"
 )
@@ -329,4 +331,133 @@ func bytesContain(haystack []byte, needle string) bool {
 		}
 	}
 	return false
+}
+
+// §16: the sync must record what *changed*, not just the current state. A
+// brief that can only say where a job is now cannot say "Ferguson moved to
+// 2pm", which is the sentence that actually helps.
+func TestSyncEmitsTypedEvents(t *testing.T) {
+	store, box := testStore(t), testBox(t)
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+
+	body := `{"items":[` +
+		event("a", "Harborview reglaze", now.Add(2*time.Hour)) + `,` +
+		event("b", "Ferguson measure", now.Add(4*time.Hour)) + `]}`
+	cfg := serveEvents(t, &body)
+
+	if err := google.Connect(store, box, "dave@example.com", liveToken()); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	// First sync: both are new.
+	res, err := google.Sync(context.Background(), cfg, store, box, now)
+	if err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if res.Created != 2 {
+		t.Errorf("created = %d, want 2", res.Created)
+	}
+
+	// Second sync, unchanged: nothing should be recorded as happening.
+	res, err = google.Sync(context.Background(), cfg, store, box, now)
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if res.Created != 0 || res.Changed != 0 {
+		t.Errorf("an unchanged sync reported created=%d changed=%d, want 0 and 0 — "+
+			"this would make the assistant announce news every ten minutes",
+			res.Created, res.Changed)
+	}
+
+	// Ferguson moves, Harborview disappears.
+	moved := now.Add(6 * time.Hour)
+	body = `{"items":[` + event("b", "Ferguson measure", moved) + `]}`
+	res, err = google.Sync(context.Background(), cfg, store, box, now)
+	if err != nil {
+		t.Fatalf("third sync: %v", err)
+	}
+	if res.Changed != 1 {
+		t.Errorf("changed = %d, want 1", res.Changed)
+	}
+	if res.Removed != 1 {
+		t.Errorf("removed = %d, want 1", res.Removed)
+	}
+
+	recs, err := store.RecentEvents(now.Add(-48*time.Hour), now.Add(48*time.Hour), 50)
+	if err != nil {
+		t.Fatalf("recent events: %v", err)
+	}
+
+	counts := map[events.Type]int{}
+	for _, r := range recs {
+		counts[r.Type]++
+	}
+	if counts[events.AppointmentCreated] != 2 {
+		t.Errorf("created events = %d, want 2", counts[events.AppointmentCreated])
+	}
+	if counts[events.AppointmentChanged] != 1 {
+		t.Errorf("changed events = %d, want 1", counts[events.AppointmentChanged])
+	}
+	if counts[events.AppointmentCancelled] != 1 {
+		t.Errorf("cancelled events = %d, want 1", counts[events.AppointmentCancelled])
+	}
+
+	// The change must carry what it moved *from*, or nobody can describe it.
+	var changed ledger.EventRecord
+	for _, r := range recs {
+		if r.Type == events.AppointmentChanged {
+			changed = r
+		}
+	}
+	var payload events.Appointment
+	if err := json.Unmarshal([]byte(changed.Payload), &payload); err != nil {
+		t.Fatalf("decode changed payload: %v", err)
+	}
+	if payload.Previous == nil {
+		t.Fatal("appointment.changed carries no previous state")
+	}
+	if !payload.Moved() {
+		t.Error("a time change was not reported as a move")
+	}
+	if !payload.Previous.StartsAt.Equal(now.Add(4 * time.Hour)) {
+		t.Errorf("previous start = %v, want %v", payload.Previous.StartsAt, now.Add(4*time.Hour))
+	}
+}
+
+// A retitle is not a move, and interrupting someone about it would be noise.
+func TestRetitleIsChangedButNotMoved(t *testing.T) {
+	store, box := testStore(t), testBox(t)
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+
+	at := now.Add(2 * time.Hour)
+	body := `{"items":[` + event("a", "Harborview reglaze", at) + `]}`
+	cfg := serveEvents(t, &body)
+	if err := google.Connect(store, box, "dave@example.com", liveToken()); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if _, err := google.Sync(context.Background(), cfg, store, box, now); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+
+	body = `{"items":[` + event("a", "Harborview reglaze (confirmed)", at) + `]}`
+	if _, err := google.Sync(context.Background(), cfg, store, box, now); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	recs, err := store.RecentEvents(now.Add(-48*time.Hour), now.Add(48*time.Hour), 50)
+	if err != nil {
+		t.Fatalf("recent events: %v", err)
+	}
+	for _, r := range recs {
+		if r.Type != events.AppointmentChanged {
+			continue
+		}
+		var p events.Appointment
+		if err := json.Unmarshal([]byte(r.Payload), &p); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if p.Moved() {
+			t.Error("a retitle was reported as a move")
+		}
+	}
 }

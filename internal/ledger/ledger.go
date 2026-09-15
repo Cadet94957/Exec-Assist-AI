@@ -121,12 +121,14 @@ CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(status);
 -- without asking the source apps to resend.
 CREATE TABLE IF NOT EXISTS events (
     id           TEXT PRIMARY KEY,
-    source       TEXT NOT NULL,  -- webhook|email|google
-    kind         TEXT,
+    source       TEXT NOT NULL,  -- google|inbound-email|webhook|system
+    kind         TEXT NOT NULL,  -- the typed events.Type
     payload      TEXT NOT NULL,
+    occurred_at  DATETIME NOT NULL,
     received_at  DATETIME NOT NULL,
     processed_at DATETIME
 );
+CREATE INDEX IF NOT EXISTS idx_events_occurred ON events(occurred_at);
 CREATE INDEX IF NOT EXISTS idx_events_unprocessed ON events(received_at) WHERE processed_at IS NULL;
 
 -- Linked third-party accounts. The token column holds an encrypted oauth2
@@ -238,13 +240,17 @@ func (s *Store) Stats() (Stats, error) {
 	return st, nil
 }
 
-// RecordEvent stores a raw inbound payload for later extraction.
-func (s *Store) RecordEvent(id, source, kind, payload string) error {
+// RecordRaw stores an untyped inbound payload for later classification. Raw
+// third-party content is data, never instruction (§15) — it is parked here and
+// classified separately, not handed straight to anything that can act.
+func (s *Store) RecordRaw(id, source, payload string) error {
+	now := time.Now().UTC()
 	_, err := s.db.Exec(
-		`INSERT INTO events (id, source, kind, payload, received_at) VALUES (?, ?, ?, ?, ?)`,
-		id, source, kind, payload, time.Now().UTC())
+		`INSERT OR IGNORE INTO events (id, source, kind, payload, occurred_at, received_at)
+		 VALUES (?, ?, 'raw', ?, ?, ?)`,
+		id, source, payload, now, now)
 	if err != nil {
-		return fmt.Errorf("ledger: record event %s: %w", id, err)
+		return fmt.Errorf("ledger: record raw payload %s: %w", id, err)
 	}
 	return nil
 }
