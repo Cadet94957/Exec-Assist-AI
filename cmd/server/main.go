@@ -225,7 +225,7 @@ func syncAll(ctx context.Context, cfg googleconnect.Config, tenants *tenant.Mana
 
 		// One slow tenant must not stall every other tenant's sync.
 		callCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		res, err := googleconnect.Sync(callCtx, cfg, stores.Ledger, box, time.Now())
+		res, err := googleconnect.Sync(callCtx, cfg, stores.Ledger(), box, time.Now())
 		cancel()
 
 		switch {
@@ -299,7 +299,7 @@ func runExtract(ctx context.Context, brain *llm.Client, tenants *tenant.Manager,
 	defer cancel()
 
 	return extract.Run(callCtx, brain,
-		extract.Stores{Ledger: stores.Ledger, Memory: stores.Memory},
+		extract.Stores{Ledger: stores.Ledger(), Memory: stores.Memory()},
 		t.Location(), time.Now())
 }
 
@@ -459,7 +459,7 @@ func seedDemo(args []string) error {
 		{"demo-1", "Harborview — storefront reglaze", "88 Harbor Way", 8},
 		{"demo-3", "Ferguson residence — shower door fit", "41 Cedar Ln", 14},
 	} {
-		if err := stores.Ledger.UpsertAppointment(ledger.Appointment{
+		if err := stores.Ledger().UpsertAppointment(ledger.Appointment{
 			ID:       a.id,
 			Title:    a.title,
 			StartsAt: day.Add(time.Duration(a.hour) * time.Hour).UTC(),
@@ -490,8 +490,17 @@ func seedDemo(args []string) error {
 	}
 
 	recorded := make(map[string]string, len(facts))
-	for _, f := range facts {
-		n, err := stores.Memory.Record(f)
+	for i, f := range facts {
+		// Demo data still has to satisfy the real guard — provenance is not
+		// optional just because a fact was seeded.
+		f.Status = memory.Observed
+		f.Provenance = memory.Provenance{
+			SourceType: "contractor",
+			ObservedAt: time.Now().UTC(),
+			Note:       "Seeded demo data.",
+			Sources:    []memory.SourceRef{{Kind: "appointment", RefID: fmt.Sprintf("demo-%d", i+1)}},
+		}
+		n, err := stores.Memory().Record(f)
 		if err != nil {
 			return err
 		}
@@ -500,7 +509,7 @@ func seedDemo(args []string) error {
 
 	// The edge is the point: it is what lets the assistant explain a rule
 	// rather than just assert it.
-	if _, err := stores.Memory.Link(
+	if _, err := stores.Memory().Link(
 		recorded["Moved insulated units to Northwest Glass"],
 		recorded["Two late units from Pacific cost us the Marriott job"],
 		memory.CausedBy,

@@ -67,7 +67,9 @@ type proposal struct {
 	WhyMatters string `json:"why_matters"`
 	Domain     string `json:"domain"`
 	Kind       string `json:"kind"`
+	Basis      string `json:"basis"`
 	Evidence   string `json:"evidence"`
+	SourceRefs []int  `json:"source_refs"`
 }
 
 type proposals struct {
@@ -83,7 +85,7 @@ func toolSchema() map[string]any {
 			"items": map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
-				"required":             []string{"label", "why_matters", "domain", "kind", "evidence"},
+				"required":             []string{"label", "why_matters", "domain", "kind", "basis", "evidence", "source_refs"},
 				"properties": map[string]any{
 					"label": map[string]any{
 						"type":        "string",
@@ -105,9 +107,20 @@ func toolSchema() map[string]any {
 						"type": "string",
 						"enum": []string{"standing", "reference", "finding", "issue", "decision", "goal"},
 					},
+					"basis": map[string]any{
+						"type": "string",
+						"description": "observed = the fact is stated outright in the data, such as a gate code written in an entry. " +
+							"inferred = you worked it out from a pattern across several entries. When in doubt, say inferred.",
+						"enum": []string{"observed", "inferred"},
+					},
 					"evidence": map[string]any{
 						"type":        "string",
 						"description": "What in the given data supports this — how many occurrences, over what span, which dates.",
+					},
+					"source_refs": map[string]any{
+						"type":        "array",
+						"description": "The [n] reference numbers of the appointments this came from. At least one. Cite only entries you actually used.",
+						"items":       map[string]any{"type": "integer"},
 					},
 				},
 			},
@@ -135,7 +148,7 @@ func Run(ctx context.Context, client *llm.Client, stores Stores, loc *time.Locat
 		return Result{}, err
 	}
 
-	evidence := buildEvidence(appts, known, loc, from, now)
+	evidence, refs := buildEvidence(appts, known, loc, from, now)
 
 	raw, usage, err := client.CallTool(ctx, llm.ToolRequest{
 		System:          systemPrompt,
@@ -168,7 +181,7 @@ func Run(ctx context.Context, client *llm.Client, stores Stores, loc *time.Locat
 	}
 
 	for _, p := range parsed.Facts {
-		fact, ok := validate(p)
+		fact, ok := validate(p, refs, now)
 		if !ok {
 			res.Rejected++
 			continue
@@ -204,7 +217,7 @@ type Stores struct {
 // validate turns a proposal into a Fact, dropping anything malformed. The
 // model is strongly schema-constrained, but a fact that reaches the graph is
 // expensive to remove later, so this checks rather than trusts.
-func validate(p proposal) (memory.Fact, bool) {
+func validate(p proposal, refs map[int]string, now time.Time) (memory.Fact, bool) {
 	label := strings.TrimSpace(p.Label)
 	why := strings.TrimSpace(p.WhyMatters)
 	evidence := strings.TrimSpace(p.Evidence)
@@ -225,19 +238,39 @@ func validate(p proposal) (memory.Fact, bool) {
 		return memory.Fact{}, false
 	}
 
-	detail := strings.TrimSpace(p.Detail)
-	if detail != "" {
-		detail += "\n\n"
+	// A claim that cites no real row cannot be traced back, which is exactly
+	// the unverifiable invention this pipeline exists to keep out.
+	sources := make([]memory.SourceRef, 0, len(p.SourceRefs))
+	for _, n := range p.SourceRefs {
+		if id, ok := refs[n]; ok {
+			sources = append(sources, memory.SourceRef{Kind: "appointment", RefID: id})
+		}
 	}
-	detail += "Noticed from: " + evidence
+	if len(sources) == 0 {
+		return memory.Fact{}, false
+	}
+
+	// The model may only propose observed or inferred; a person decides the
+	// rest. Anything it does not mark explicitly is treated as unproven.
+	status := memory.Inferred
+	if p.Basis == string(memory.Observed) {
+		status = memory.Observed
+	}
 
 	return memory.Fact{
-		Label:       label,
-		Detail:      detail,
-		WhyMatters:  why,
-		Domain:      p.Domain,
-		Kind:        kind,
-		Unconfirmed: true,
+		Label:      label,
+		Detail:     strings.TrimSpace(p.Detail),
+		WhyMatters: why,
+		Domain:     p.Domain,
+		Kind:       kind,
+		Status:     status,
+		Provenance: memory.Provenance{
+			SourceType:  "extraction",
+			Integration: "google",
+			ObservedAt:  now,
+			Note:        evidence,
+			Sources:     sources,
+		},
 	}, true
 }
 
@@ -245,15 +278,19 @@ func validate(p proposal) (memory.Fact, bool) {
 //
 // Weekday is spelled out because day-of-week patterns are among the most
 // useful things a calendar can reveal, and a bare date hides them.
-func buildEvidence(appts []ledger.Appointment, known []memory.Recalled, loc *time.Location, from, to time.Time) string {
+func buildEvidence(appts []ledger.Appointment, known []memory.Recalled, loc *time.Location, from, to time.Time) (string, map[int]string) {
 	var b strings.Builder
+	refs := make(map[int]string, len(appts))
 
-	fmt.Fprintf(&b, "APPOINTMENTS (%s to %s, %d shown, times local)\n\n",
+	fmt.Fprintf(&b, "APPOINTMENTS (%s to %s, %d shown, times local)\n"+
+		"Each line starts with a [n] reference. Cite the ones you use in source_refs.\n\n",
 		from.In(loc).Format("2006-01-02"), to.In(loc).Format("2006-01-02"), len(appts))
 
-	for _, a := range appts {
+	for i, a := range appts {
+		n := i + 1
+		refs[n] = a.ID
 		start := a.StartsAt.In(loc)
-		fmt.Fprintf(&b, "%s %s  %s", start.Format("Mon 2006-01-02"), start.Format("15:04"), a.Title)
+		fmt.Fprintf(&b, "[%d] %s %s  %s", n, start.Format("Mon 2006-01-02"), start.Format("15:04"), a.Title)
 		if a.Location.Valid && a.Location.String != "" {
 			fmt.Fprintf(&b, "  @ %s", a.Location.String)
 		}
@@ -262,12 +299,12 @@ func buildEvidence(appts []ledger.Appointment, known []memory.Recalled, loc *tim
 
 	if len(known) == 0 {
 		b.WriteString("\nALREADY KNOWN\n\n(nothing yet)\n")
-		return b.String()
+		return b.String(), refs
 	}
 
 	b.WriteString("\nALREADY KNOWN — do not restate any of these, in any wording\n\n")
 	for _, k := range known {
 		fmt.Fprintf(&b, "- [%s] %s\n", k.Domain, k.Label)
 	}
-	return b.String()
+	return b.String(), refs
 }

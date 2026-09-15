@@ -60,7 +60,7 @@ func testStores(t *testing.T) extract.Stores {
 	if err != nil {
 		t.Fatalf("open ledger: %v", err)
 	}
-	mem, err := memory.Open(filepath.Join(dir, "memory.db"))
+	mem, err := memory.Open(filepath.Join(dir, "memory.db"), led.DB())
 	if err != nil {
 		t.Fatalf("open memory: %v", err)
 	}
@@ -99,7 +99,9 @@ func goodFact() map[string]any {
 		"why_matters": "Invoicing the property manager gets it rejected and delays payment by a month",
 		"domain":      "customers",
 		"kind":        "standing",
+		"basis":       "inferred",
 		"evidence":    "Six jobs at 1200 4th St over three months, all titled with the GC",
+		"source_refs": []any{1, 2},
 	}
 }
 
@@ -130,16 +132,90 @@ func TestRunRecordsValidFacts(t *testing.T) {
 	}
 
 	// An inference is not knowledge until a person agrees with it.
-	if !all[0].Unconfirmed() {
-		t.Error("an extracted fact was recorded as confirmed")
+	if !all[0].AwaitingReview() {
+		t.Errorf("an extracted fact was recorded as %q, want inferred", all[0].Status)
 	}
 	if all[0].Kind != memory.Standing {
 		t.Errorf("kind = %q, want standing", all[0].Kind)
 	}
-	// The evidence has to survive into the graph, or nobody can audit why the
-	// assistant believes something.
-	if !strings.Contains(all[0].Detail, "Six jobs at 1200 4th St") {
-		t.Errorf("evidence was not kept with the fact: %q", all[0].Detail)
+	// The evidence has to be traceable to real rows, or nobody can audit why
+	// the assistant believes something.
+	if !strings.Contains(all[0].Provenance.Note, "Six jobs at 1200 4th St") {
+		t.Errorf("evidence was not kept with the fact: %q", all[0].Provenance.Note)
+	}
+	if len(all[0].Provenance.Sources) == 0 {
+		t.Fatal("the fact cites no ledger rows — it cannot be traced back")
+	}
+	for _, src := range all[0].Provenance.Sources {
+		if src.Kind != "appointment" || src.RefID == "" {
+			t.Errorf("bad source ref %+v", src)
+		}
+	}
+}
+
+// §7: a claim that cites nothing real is exactly the plausible invention this
+// pipeline exists to keep out.
+func TestRunRejectsFactsCitingNothing(t *testing.T) {
+	stores := testStores(t)
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	seedAppointments(t, stores, now, 3)
+
+	bad := goodFact()
+	bad["source_refs"] = []any{}
+
+	srv, _ := fakeAnthropic(t, map[string]any{"facts": []any{bad}})
+	res, err := extract.Run(context.Background(), client(t, srv.URL), stores, time.UTC, now)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Recorded != 0 || res.Rejected != 1 {
+		t.Errorf("recorded=%d rejected=%d, want 0 and 1", res.Recorded, res.Rejected)
+	}
+}
+
+// A reference the model invented must not resolve to anything.
+func TestRunIgnoresInventedSourceRefs(t *testing.T) {
+	stores := testStores(t)
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	seedAppointments(t, stores, now, 3)
+
+	bad := goodFact()
+	bad["source_refs"] = []any{99, 100}
+
+	srv, _ := fakeAnthropic(t, map[string]any{"facts": []any{bad}})
+	res, err := extract.Run(context.Background(), client(t, srv.URL), stores, time.UTC, now)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Recorded != 0 {
+		t.Error("a fact citing appointments that do not exist was recorded")
+	}
+}
+
+// §6: extraction may mark something it read verbatim as observed.
+func TestObservedBasisIsHonoured(t *testing.T) {
+	stores := testStores(t)
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	seedAppointments(t, stores, now, 3)
+
+	f := goodFact()
+	f["basis"] = "observed"
+	f["label"] = "Harborview gate code is 4417"
+
+	srv, _ := fakeAnthropic(t, map[string]any{"facts": []any{f}})
+	if _, err := extract.Run(context.Background(), client(t, srv.URL), stores, time.UTC, now); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	all, err := stores.Memory.All("", 10)
+	if err != nil {
+		t.Fatalf("all: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("got %d facts, want 1", len(all))
+	}
+	if all[0].Status != memory.Observed {
+		t.Errorf("status = %q, want observed", all[0].Status)
 	}
 }
 
@@ -291,6 +367,11 @@ func TestRequestIsCachedAndGrounded(t *testing.T) {
 	if _, err := stores.Memory.Record(memory.Fact{
 		Label: "Nothing booked after 3pm on Tuesdays", Domain: "scheduling",
 		WhyMatters: "Booking over it means cancelling on a customer", Kind: memory.Standing,
+		Status: memory.Inferred,
+		Provenance: memory.Provenance{
+			SourceType: "extraction", ObservedAt: time.Now(), Note: "Seen repeatedly.",
+			Sources: []memory.SourceRef{{Kind: "appointment", RefID: "seed"}},
+		},
 	}); err != nil {
 		t.Fatalf("seed known fact: %v", err)
 	}

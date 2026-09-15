@@ -156,14 +156,14 @@ func (s *Server) reviewFact(w http.ResponseWriter, r *http.Request, t tenant.Ten
 	}
 
 	if keep {
-		if err := stores.Memory.Confirm(id); err != nil {
+		if err := stores.Memory().Confirm(id); err != nil {
 			s.fail(w, "save that", err)
 			return
 		}
 		s.noticeAt(w, r, "/settings", "Got it — I'll rely on that.")
 		return
 	}
-	if err := stores.Memory.Forget(id, "Discarded during review by the contractor."); err != nil {
+	if err := stores.Memory().Reject(id, "Rejected during review by the contractor."); err != nil {
 		s.fail(w, "discard that", err)
 		return
 	}
@@ -189,7 +189,7 @@ func (s *Server) handleForgetFact(w http.ResponseWriter, r *http.Request, t tena
 		s.fail(w, "open your data", err)
 		return
 	}
-	if err := stores.Memory.Forget(id, "Removed by the contractor from Settings."); err != nil {
+	if err := stores.Memory().Forget(id, "Removed by the contractor from Settings."); err != nil {
 		s.fail(w, "forget that", err)
 		return
 	}
@@ -285,7 +285,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, t tenan
 		return
 	}
 
-	stats, err := stores.Ledger.Stats()
+	stats, err := stores.Ledger().Stats()
 	if err != nil {
 		s.fail(w, "read your ledger", err)
 		return
@@ -293,19 +293,19 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, t tenan
 
 	loc := t.Location()
 	dayStart := t.StartOfDay(time.Now())
-	appts, err := stores.Ledger.Between(dayStart, dayStart.AddDate(0, 0, 1))
+	appts, err := stores.Ledger().Between(dayStart, dayStart.AddDate(0, 0, 1))
 	if err != nil {
 		s.fail(w, "read today's schedule", err)
 		return
 	}
 
-	pending, err := stores.Memory.Pending(20)
+	pending, err := stores.Memory().Pending(20)
 	if err != nil {
 		s.fail(w, "read your memory", err)
 		return
 	}
 
-	conn, connErr := stores.Ledger.GetConnection(google.Provider)
+	conn, connErr := stores.Ledger().GetConnection(google.Provider)
 	connected := connErr == nil
 	if connErr != nil && !errors.Is(connErr, ledger.ErrNoConnection) {
 		log.Printf("[web] read calendar connection for %s: %v", t.ID, connErr)
@@ -334,7 +334,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request, t tenant
 	}
 
 	domain := r.URL.Query().Get("domain")
-	sig, err := stores.Memory.Learned(domain, 40)
+	sig, err := stores.Memory().Learned(domain, 40)
 	if err != nil {
 		s.fail(w, "read what I've learned", err)
 		return
@@ -342,32 +342,34 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request, t tenant
 
 	// Inferred facts are held back for review rather than mixed in with what
 	// the assistant already relies on.
-	pending, err := stores.Memory.Pending(20)
+	pending, err := stores.Memory().Pending(20)
 	if err != nil {
 		s.fail(w, "read what's waiting for review", err)
 		return
 	}
-	confirmed := func(in []memory.Recalled) []memory.Recalled {
+	// Inferred facts are shown in the review queue, not mixed in with what the
+	// assistant already relies on.
+	settled := func(in []memory.Recalled) []memory.Recalled {
 		out := make([]memory.Recalled, 0, len(in))
 		for _, r := range in {
-			if !r.Unconfirmed() {
+			if !r.AwaitingReview() {
 				out = append(out, r)
 			}
 		}
 		return out
 	}
-	domains, err := stores.Memory.Domains()
+	domains, err := stores.Memory().Domains()
 	if err != nil {
 		s.fail(w, "list your areas", err)
 		return
 	}
 
-	conn, connErr := stores.Ledger.GetConnection(google.Provider)
+	conn, connErr := stores.Ledger().GetConnection(google.Provider)
 	if connErr != nil && !errors.Is(connErr, ledger.ErrNoConnection) {
 		log.Printf("[web] read calendar connection for %s: %v", t.ID, connErr)
 	}
 
-	important, recent := confirmed(sig.Important), confirmed(sig.Recent)
+	important, recent := settled(sig.Important), settled(sig.Recent)
 	s.render(w, "settings.html", map[string]any{
 		"Nav":             "settings",
 		"Tenant":          t,
@@ -394,7 +396,7 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request, t tenant.T
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	var results []memory.Recalled
 	if query != "" {
-		results, err = stores.Memory.Recall(query, "", 15)
+		results, err = stores.Memory().Recall(query, "", 15)
 		if err != nil {
 			s.fail(w, "search your memory", err)
 			return

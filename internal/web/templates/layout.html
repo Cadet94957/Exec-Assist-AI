@@ -116,6 +116,16 @@
   h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 28px 0 10px; }
   .fact { border-left: 3px solid var(--accent); padding-left: 12px; margin-bottom: 16px; }
   .fact.pending { border-left-color: var(--muted); }
+  .status {
+    display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+    border: 1px solid var(--line); color: var(--muted);
+    border-radius: 4px; padding: 1px 6px; margin-left: 4px; vertical-align: 1px;
+  }
+  .status-confirmed, .status-observed { border-color: var(--ok); color: var(--ok); }
+  .prov { margin-top: 6px; }
+  .prov summary { font-size: 13px; color: var(--accent-ink); cursor: pointer; }
+  .prov summary:hover { text-decoration: underline; }
+  .prov p { margin: 6px 0 0; }
   .fact .label { font-weight: 600; }
   .fact .why { color: var(--muted); font-size: 14px; margin-top: 2px; }
   .review { display: flex; gap: 16px; margin-top: 8px; }

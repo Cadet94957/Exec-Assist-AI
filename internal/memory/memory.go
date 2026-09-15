@@ -10,6 +10,7 @@
 package memory
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"sort"
@@ -77,12 +78,6 @@ var validRelations = map[Relation]bool{
 	GovernedBy: true, Resolved: true, ResolvedBy: true, Supersedes: true,
 }
 
-// TagUnconfirmed marks a fact the assistant inferred but a person has not yet
-// agreed with. Extraction is useful but not trustworthy on its own, so
-// everything it proposes lands here first and is shown for review. Confirming
-// removes the tag; discarding archives the fact with a reason.
-const TagUnconfirmed = "unconfirmed"
-
 // ErrNoWhyMatters is returned when a caller tries to file something without
 // saying why it should change future behaviour. This is the guard that keeps
 // the graph a decision log.
@@ -110,9 +105,11 @@ type Fact struct {
 	Tags []string
 	// OccurredAt is when the underlying thing happened, if it differs from now.
 	OccurredAt *time.Time
-	// Unconfirmed marks this as inferred rather than told, so it is held for
-	// review instead of being acted on immediately.
-	Unconfirmed bool
+	// Status must be Observed or Inferred. Confirmed and Rejected are
+	// reachable only through a person deciding.
+	Status Status
+	// Provenance is the evidence behind this belief. Required.
+	Provenance Provenance
 }
 
 // Recalled is a fact coming back out of the graph. Callers work with this
@@ -126,20 +123,17 @@ type Recalled struct {
 	Domain     string
 	Kind       Kind
 	Tags       []string
+	// Status and Provenance travel with every recalled fact. The assistant
+	// must hedge anything not Trusted rather than stating it as settled.
+	Status     Status
+	Provenance Provenance
 	// Importance is how much the rest of the graph leans on this fact. It is
 	// zero for facts that have not been ranked, which is most of them early on.
 	Importance float64
 }
 
-// Unconfirmed reports whether this fact is still awaiting review.
-func (r Recalled) Unconfirmed() bool {
-	for _, t := range r.Tags {
-		if t == TagUnconfirmed {
-			return true
-		}
-	}
-	return false
-}
+// AwaitingReview reports whether a person has yet to rule on this fact.
+func (r Recalled) AwaitingReview() bool { return r.Status == Inferred }
 
 // Summary is what the assistant knows, arranged for reading.
 type Summary struct {
@@ -160,16 +154,26 @@ var allKinds = []string{
 // the underlying *sql.DB pools connections and the schema runs in WAL mode.
 type Store struct {
 	st   *db.Store
+	meta *metaStore
 	path string
 }
 
-// Open opens (creating and migrating if needed) the graph at path.
-func Open(path string) (*Store, error) {
+// Open opens the graph at path, keeping status and provenance in metaDB.
+//
+// metaDB is the tenant's ledger database. Provenance cites ledger rows, so
+// keeping it there makes "why do you think that?" a join instead of a lookup
+// across two files with no shared transaction. The graph stays the graph.
+func Open(path string, metaDB *sql.DB) (*Store, error) {
 	st, err := db.New(path)
 	if err != nil {
 		return nil, fmt.Errorf("memory: open %s: %w", path, err)
 	}
-	return &Store{st: st, path: path}, nil
+	meta, err := newMetaStore(metaDB)
+	if err != nil {
+		st.Close() //nolint:errcheck
+		return nil, err
+	}
+	return &Store{st: st, meta: meta, path: path}, nil
 }
 
 // Close checkpoints the WAL and closes the handle. Always call it before
@@ -201,12 +205,22 @@ func (s *Store) Record(f Fact) (*db.Node, error) {
 	if kind == "" {
 		kind = Finding
 	}
-	tags := f.Tags
-	if f.Unconfirmed {
-		tags = append(append([]string{}, tags...), TagUnconfirmed)
-	}
 	if !validKinds[kind] {
 		return nil, fmt.Errorf("memory: unknown kind %q", kind)
+	}
+
+	status := f.Status
+	if status == "" {
+		// Defaulting to Inferred is the safe direction: an unmarked belief is
+		// treated as unproven rather than quietly trusted.
+		status = Inferred
+	}
+	if !writableStatuses[status] {
+		return nil, fmt.Errorf("memory: cannot create a memory as %q — only %q or %q; a person decides the rest",
+			status, Observed, Inferred)
+	}
+	if err := f.Provenance.validate(); err != nil {
+		return nil, err
 	}
 
 	node, err := s.st.AddNode(
@@ -215,11 +229,22 @@ func (s *Store) Record(f Fact) (*db.Node, error) {
 		f.WhyMatters,
 		f.Domain,
 		f.OccurredAt,
-		strings.Join(tags, ","),
+		strings.Join(f.Tags, ","),
 		string(kind),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("memory: record %q: %w", f.Label, err)
+	}
+
+	if err := s.meta.put(Meta{
+		NodeID:     node.ID,
+		Status:     status,
+		Provenance: f.Provenance,
+	}); err != nil {
+		// The node exists but is unexplainable. Archive it rather than leave a
+		// belief in the graph nobody can trace.
+		s.st.ArchiveNode(node.ID, "metadata write failed; memory is not explainable") //nolint:errcheck
+		return nil, err
 	}
 	return node, nil
 }
@@ -258,7 +283,7 @@ func (s *Store) Recall(query, domain string, limit int) ([]Recalled, error) {
 	if err != nil {
 		return nil, fmt.Errorf("memory: recall %q: %w", query, err)
 	}
-	return flatten(res), nil
+	return s.decorateAll(flatten(res)), nil
 }
 
 // All lists live facts, newest first. Pass an empty domain for everything.
@@ -272,7 +297,7 @@ func (s *Store) All(domain string, limit int) ([]Recalled, error) {
 	if err != nil {
 		return nil, fmt.Errorf("memory: list: %w", err)
 	}
-	return flatten(res), nil
+	return s.decorateAll(flatten(res)), nil
 }
 
 // Get returns one fact with everything it is connected to.
@@ -307,6 +332,7 @@ func (s *Store) Learned(domain string, limit int) (Summary, error) {
 		ranked[n.ID] = true
 		out.Important = append(out.Important, recalled(n.Node, n.ImportanceScore))
 	}
+	out.Important = s.decorateAll(out.Important)
 
 	// Everything not already shown above, newest first. This is what makes the
 	// page worth looking at on day one.
@@ -354,47 +380,96 @@ func (s *Store) SimilarTo(label, domain string) ([]Recalled, error) {
 	for _, n := range nodes {
 		out = append(out, recalled(n, 0))
 	}
-	return out, nil
+	return s.decorateAll(out), nil
 }
 
-// Pending lists facts awaiting review, newest first.
+// Pending lists inferred facts awaiting a person's decision, newest first.
+// Status is a column now, so this is a query rather than a scan of every node.
 func (s *Store) Pending(limit int) ([]Recalled, error) {
-	all, err := s.All("", 200)
+	ids, err := s.meta.listByStatus(Inferred, limit)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Recalled, 0, limit)
-	for _, r := range all {
-		if r.Unconfirmed() {
-			out = append(out, r)
-			if len(out) == limit {
-				break
-			}
+
+	out := make([]Recalled, 0, len(ids))
+	for _, id := range ids {
+		node, err := s.st.GetNode(id)
+		if err != nil {
+			// Metadata can outlive an archived node; skip rather than fail the
+			// whole review queue over one stale row.
+			continue
 		}
+		if node.Node.ArchivedAt != nil {
+			continue
+		}
+		out = append(out, s.decorate(recalled(node.Node, 0)))
 	}
 	return out, nil
 }
 
-// Confirm accepts an inferred fact, removing the unconfirmed tag so it counts
-// as something the assistant may rely on.
+// Confirm records that a person agreed with an inferred fact, so the assistant
+// may state it plainly from now on.
 func (s *Store) Confirm(id string) error {
-	node, err := s.st.GetNode(id)
-	if err != nil {
-		return fmt.Errorf("memory: confirm %s: %w", id, err)
-	}
-
-	kept := make([]string, 0)
-	for _, t := range splitTags(node.Node.Tags) {
-		if t != TagUnconfirmed {
-			kept = append(kept, t)
-		}
-	}
-	tags := strings.Join(kept, ",")
-
-	if _, err := s.st.UpdateNode(id, nil, nil, nil, &tags, nil, nil, nil, nil); err != nil {
+	if err := s.meta.setStatus(id, Confirmed, time.Now().UTC()); err != nil {
 		return fmt.Errorf("memory: confirm %s: %w", id, err)
 	}
 	return nil
+}
+
+// Reject records that a person disagreed, and archives the node so it stops
+// influencing anything. memoryweb soft-deletes, so this stays reversible.
+func (s *Store) Reject(id, reason string) error {
+	if strings.TrimSpace(reason) == "" {
+		reason = "Rejected during review."
+	}
+	if err := s.meta.setStatus(id, Rejected, time.Now().UTC()); err != nil {
+		return fmt.Errorf("memory: reject %s: %w", id, err)
+	}
+	if err := s.st.ArchiveNode(id, reason); err != nil {
+		return fmt.Errorf("memory: reject %s: %w", id, err)
+	}
+	return nil
+}
+
+// Why returns the evidence behind a memory, for "why do you think that?".
+func (s *Store) Why(id string) (Meta, error) { return s.meta.get(id) }
+
+// decorate attaches status and provenance to one recalled fact.
+func (s *Store) decorate(r Recalled) Recalled {
+	meta, err := s.meta.get(r.ID)
+	if err != nil {
+		// A fact with no metadata predates this model or lost its row. Treat it
+		// as inferred: unproven is the safe direction to be wrong in.
+		r.Status = Inferred
+		return r
+	}
+	r.Status = meta.Status
+	r.Provenance = meta.Provenance
+	return r
+}
+
+// decorateAll attaches metadata to a page of facts in one query.
+func (s *Store) decorateAll(rs []Recalled) []Recalled {
+	if len(rs) == 0 {
+		return rs
+	}
+	ids := make([]string, len(rs))
+	for i, r := range rs {
+		ids[i] = r.ID
+	}
+	metas, err := s.meta.getMany(ids)
+	if err != nil {
+		return rs
+	}
+	for i, r := range rs {
+		if m, ok := metas[r.ID]; ok {
+			rs[i].Status = m.Status
+			rs[i].Provenance = m.Provenance
+		} else {
+			rs[i].Status = Inferred
+		}
+	}
+	return rs
 }
 
 // Forget archives a fact with a reason. memoryweb soft-deletes, so this is

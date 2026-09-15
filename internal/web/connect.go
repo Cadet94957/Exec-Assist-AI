@@ -83,7 +83,7 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request, t 
 		return
 	}
 
-	if err := google.Connect(stores.Ledger, s.secrets, emailFromToken(tok), tok); err != nil {
+	if err := google.Connect(stores.Ledger(), s.secrets, emailFromToken(tok), tok); err != nil {
 		log.Printf("[google] store token for %s: %v", t.ID, err)
 		s.fail(w, "save the calendar connection", err)
 		return
@@ -91,7 +91,7 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request, t 
 
 	// Sync immediately so the dashboard is populated when they land back on
 	// it. An empty screen right after connecting reads as a failure.
-	if _, err := google.Sync(ctx, s.google, stores.Ledger, s.secrets, time.Now()); err != nil {
+	if _, err := google.Sync(ctx, s.google, stores.Ledger(), s.secrets, time.Now()); err != nil {
 		log.Printf("[google] first sync for %s: %v", t.ID, err)
 		s.notice(w, r, "Calendar connected. The first sync had trouble — it'll retry shortly.")
 		return
@@ -111,7 +111,7 @@ func (s *Server) handleSyncGoogle(w http.ResponseWriter, r *http.Request, t tena
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
-	res, err := google.Sync(ctx, s.google, stores.Ledger, s.secrets, time.Now())
+	res, err := google.Sync(ctx, s.google, stores.Ledger(), s.secrets, time.Now())
 	if err != nil {
 		if errors.Is(err, ledger.ErrNoConnection) {
 			s.notice(w, r, "No calendar is connected yet.")
@@ -131,7 +131,7 @@ func (s *Server) handleDisconnectGoogle(w http.ResponseWriter, r *http.Request, 
 		s.fail(w, "open your data", err)
 		return
 	}
-	if err := stores.Ledger.DeleteConnection(google.Provider); err != nil {
+	if err := stores.Ledger().DeleteConnection(google.Provider); err != nil {
 		s.fail(w, "disconnect the calendar", err)
 		return
 	}

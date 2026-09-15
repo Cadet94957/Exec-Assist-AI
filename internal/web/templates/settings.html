@@ -45,9 +45,23 @@
         <p class="muted small" style="margin:0 0 14px">I noticed these while reading your calendar. I won't rely on anything here until you say so.</p>
         {{range .Pending}}
           <div class="fact pending">
-            <p class="label">{{.Label}} <span class="kind">{{.Kind}}</span></p>
+            <p class="label">{{.Label}}
+              <span class="kind">{{.Kind}}</span>
+              <span class="status status-inferred">inferred</span>
+            </p>
             {{if .Detail}}<p class="small">{{.Detail}}</p>{{end}}
             <p class="why">{{.WhyMatters}}</p>
+            {{if .Provenance.Note}}
+              <details class="prov">
+                <summary>Why do you think that?</summary>
+                <p class="small">{{.Provenance.Note}}</p>
+                <p class="muted small">
+                  {{.Provenance.SourceType}}{{if .Provenance.Integration}} &middot; {{.Provenance.Integration}}{{end}}
+                  &middot; {{len .Provenance.Sources}} source{{if ne (len .Provenance.Sources) 1}}s{{end}}
+                  &middot; seen {{.Provenance.ObservedAt.Format "2 Jan 2006"}}
+                </p>
+              </details>
+            {{end}}
             <div class="review">
               <form method="post" action="/memory/confirm">
                 <input type="hidden" name="id" value="{{.ID}}">
@@ -63,7 +77,7 @@
       </div>
     {{end}}
 
-    <p class="muted small">What I understand about your business. This is everything I use when I plan your day &mdash; remove anything that's wrong or out of date.</p>
+    <p class="muted small">What I understand about your business. This is everything I use when I plan your day &mdash; remove anything that's wrong or out of date. <strong>Observed</strong> means I read it somewhere directly; <strong>confirmed</strong> means you told me it's right.</p>
 
     {{if .Domains}}
       <nav class="filters" aria-label="Filter memory by area">

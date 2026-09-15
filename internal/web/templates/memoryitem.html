@@ -1,8 +1,22 @@
 {{define "memoryitem"}}
-<div class="fact">
-  <p class="label">{{.Label}} <span class="kind">{{.Kind}}</span></p>
+<div class="fact{{if .AwaitingReview}} pending{{end}}">
+  <p class="label">{{.Label}}
+    <span class="kind">{{.Kind}}</span>
+    <span class="status status-{{.Status}}">{{.Status}}</span>
+  </p>
   {{if .Detail}}<p class="small">{{.Detail}}</p>{{end}}
   <p class="why">{{.WhyMatters}}</p>
+  {{if .Provenance.Note}}
+    <details class="prov">
+      <summary>Why do you think that?</summary>
+      <p class="small">{{.Provenance.Note}}</p>
+      <p class="muted small">
+        {{.Provenance.SourceType}}{{if .Provenance.Integration}} &middot; {{.Provenance.Integration}}{{end}}
+        &middot; {{len .Provenance.Sources}} source{{if ne (len .Provenance.Sources) 1}}s{{end}}
+        &middot; seen {{.Provenance.ObservedAt.Format "2 Jan 2006"}}
+      </p>
+    </details>
+  {{end}}
   <form method="post" action="/memory/forget" class="forget">
     <input type="hidden" name="id" value="{{.ID}}">
     <button class="link quiet">Forget this</button>

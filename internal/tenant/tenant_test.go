@@ -47,16 +47,23 @@ func TestTenantsAreIsolated(t *testing.T) {
 		t.Fatalf("kim stores: %v", err)
 	}
 
-	if _, err := dave.Memory.Record(memory.Fact{
+	if _, err := dave.Memory().Record(memory.Fact{
 		Label:      "Harborview gate code is 4417",
 		Domain:     "properties",
 		WhyMatters: "Without it the crew waits at the gate.",
 		Kind:       memory.Reference,
+		Status:     memory.Observed,
+		Provenance: memory.Provenance{
+			SourceType: "contractor",
+			ObservedAt: time.Now(),
+			Note:       "Told to us directly.",
+			Sources:    []memory.SourceRef{{Kind: "appointment", RefID: "a1"}},
+		},
 	}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 
-	found, err := dave.Memory.Recall("Harborview", "", 10)
+	found, err := dave.Memory().Recall("Harborview", "", 10)
 	if err != nil {
 		t.Fatalf("dave recall: %v", err)
 	}
@@ -64,7 +71,7 @@ func TestTenantsAreIsolated(t *testing.T) {
 		t.Fatal("dave cannot recall his own fact")
 	}
 
-	leaked, err := kim.Memory.Recall("Harborview", "", 10)
+	leaked, err := kim.Memory().Recall("Harborview", "", 10)
 	if err != nil {
 		t.Fatalf("kim recall: %v", err)
 	}
@@ -72,10 +79,10 @@ func TestTenantsAreIsolated(t *testing.T) {
 		t.Fatalf("kim recalled %d of dave's facts — tenants are not isolated", len(leaked))
 	}
 
-	if dave.Memory.Path() == kim.Memory.Path() {
+	if dave.Memory().Path() == kim.Memory().Path() {
 		t.Error("both tenants share one memory database")
 	}
-	if dave.Ledger.Path() == kim.Ledger.Path() {
+	if dave.Ledger().Path() == kim.Ledger().Path() {
 		t.Error("both tenants share one ledger database")
 	}
 }

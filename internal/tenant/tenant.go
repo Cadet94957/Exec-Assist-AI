@@ -68,11 +68,32 @@ func (t Tenant) StartOfDay(now time.Time) time.Time {
 	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
 }
 
+// TenantStore is how the rest of the application reaches a tenant's data.
+//
+// Handlers depend on this, never on the filesystem: tenant.Manager stays the
+// only thing that knows where a tenant's files live, which is what keeps a
+// request from ever constructing a path out of user input.
+type TenantStore interface {
+	Tenant() Tenant
+	Ledger() *ledger.Store
+	Memory() *memory.Store
+}
+
 // Stores is one tenant's pair of open databases.
 type Stores struct {
-	Ledger *ledger.Store
-	Memory *memory.Store
+	tenant Tenant
+	ledger *ledger.Store
+	memory *memory.Store
 }
+
+// Tenant returns who these stores belong to.
+func (s *Stores) Tenant() Tenant { return s.tenant }
+
+// Ledger is the operational record.
+func (s *Stores) Ledger() *ledger.Store { return s.ledger }
+
+// Memory is the learned judgement.
+func (s *Stores) Memory() *memory.Store { return s.memory }
 
 // Manager is the tenant registry plus a cache of open store handles.
 type Manager struct {
@@ -118,10 +139,12 @@ func (m *Manager) Close() error {
 	defer m.mu.Unlock()
 	var firstErr error
 	for id, s := range m.open {
-		if err := s.Ledger.Close(); err != nil && firstErr == nil {
+		// Memory keeps its metadata in the ledger's database, so close it
+		// first: the graph handle must be done before the ledger goes away.
+		if err := s.memory.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		if err := s.Memory.Close(); err != nil && firstErr == nil {
+		if err := s.ledger.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 		delete(m.open, id)
@@ -247,19 +270,42 @@ func (m *Manager) Stores(id string) (*Stores, error) {
 		return nil, fmt.Errorf("tenant: create dir %s: %w", dir, err)
 	}
 
+	t, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+
 	led, err := ledger.Open(filepath.Join(dir, "ledger.db"))
 	if err != nil {
 		return nil, err
 	}
-	mem, err := memory.Open(filepath.Join(dir, "memory.db"))
+	// The graph lives in its own file; its status and provenance live in the
+	// ledger, beside the rows that provenance cites.
+	mem, err := memory.Open(filepath.Join(dir, "memory.db"), led.DB())
 	if err != nil {
-		led.Close()
+		led.Close() //nolint:errcheck
 		return nil, err
 	}
 
-	s := &Stores{Ledger: led, Memory: mem}
+	s := &Stores{tenant: t, ledger: led, memory: mem}
 	m.open[id] = s
 	return s, nil
+}
+
+// get loads a tenant without touching the store cache, so Stores can record
+// who it belongs to without recursing.
+func (m *Manager) get(id string) (Tenant, error) {
+	var t Tenant
+	err := m.reg.QueryRow(
+		`SELECT id, name, trade, timezone, COALESCE(phone, ''), created_at FROM tenants WHERE id = ?`, id,
+	).Scan(&t.ID, &t.Name, &t.Trade, &t.Timezone, &t.Phone, &t.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Tenant{}, ErrNotFound
+	}
+	if err != nil {
+		return Tenant{}, fmt.Errorf("tenant: get %s: %w", id, err)
+	}
+	return t, nil
 }
 
 func newKey() (string, error) {
