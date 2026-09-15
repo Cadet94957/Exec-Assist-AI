@@ -14,7 +14,7 @@ import (
 // health routes, which need no session.
 func staticRoutes(t *testing.T) http.Handler {
 	t.Helper()
-	s, err := New(nil, []byte("a-test-secret-at-least-32-chars-long"), false, googleZero(), nil)
+	s, err := New(nil, []byte("a-test-secret-at-least-32-chars-long"), false, googleZero(), nil, nil)
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}

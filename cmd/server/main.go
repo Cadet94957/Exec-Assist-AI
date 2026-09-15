@@ -149,7 +149,7 @@ func serve() error {
 		log.Print("[extract] ANTHROPIC_API_KEY is unset — nothing will be learned from synced data")
 	}
 
-	site, err := web.New(tenants, secret, os.Getenv("INSECURE_COOKIES") != "1", gcfg, box)
+	site, err := web.New(tenants, secret, os.Getenv("INSECURE_COOKIES") != "1", gcfg, box, brain)
 	if err != nil {
 		return err
 	}

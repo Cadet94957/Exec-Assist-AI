@@ -11,6 +11,7 @@ package ledger
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -145,8 +146,10 @@ CREATE TABLE IF NOT EXISTS connections (
 `
 
 func (s *Store) migrate() error {
-	if _, err := s.db.Exec(schema); err != nil {
-		return fmt.Errorf("ledger: migrate %s: %w", s.path, err)
+	for _, stmt := range []string{schema, briefSchema} {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("ledger: migrate %s: %w", s.path, err)
+		}
 	}
 	return nil
 }
@@ -292,4 +295,144 @@ func (s *Store) SearchAppointments(query string, limit int) ([]Appointment, erro
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// LocationText returns the appointment's location, or an empty string. It
+// exists so callers do not have to reach through sql.NullString to ask a
+// question as ordinary as "where is this".
+func (a Appointment) LocationText() string {
+	if a.Location.Valid {
+		return a.Location.String
+	}
+	return ""
+}
+
+// Ends returns when the appointment finishes, falling back to an hour after it
+// starts. An appointment with no end still occupies time; treating it as zero
+// would make every day look empty and every gap look generous.
+func (a Appointment) Ends() time.Time {
+	if a.EndsAt.Valid {
+		return a.EndsAt.Time
+	}
+	return a.StartsAt.Add(time.Hour)
+}
+
+// Invoice is money owed.
+type Invoice struct {
+	ID          string
+	Number      sql.NullString
+	Customer    sql.NullString
+	AmountCents int64
+	Status      string
+	DueAt       sql.NullTime
+}
+
+// Outstanding returns invoices that have been sent but not paid, oldest first.
+// "What needs collecting" is one of the seven questions a morning brief has to
+// answer, and it is the one most directly about money.
+func (s *Store) Outstanding(limit int) ([]Invoice, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.Query(`
+        SELECT i.id, i.number, c.name, i.amount_cents, i.status, i.due_at
+        FROM invoices i
+        LEFT JOIN contacts c ON c.id = i.contact_id
+        WHERE i.status IN ('sent', 'overdue')
+        ORDER BY COALESCE(i.due_at, i.issued_at, i.created_at) ASC
+        LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("ledger: outstanding invoices: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Invoice
+	for rows.Next() {
+		var inv Invoice
+		if err := rows.Scan(&inv.ID, &inv.Number, &inv.Customer,
+			&inv.AmountCents, &inv.Status, &inv.DueAt); err != nil {
+			return nil, fmt.Errorf("ledger: scan invoice: %w", err)
+		}
+		out = append(out, inv)
+	}
+	return out, rows.Err()
+}
+
+// Brief is a generated morning brief.
+type Brief struct {
+	Date        time.Time
+	Headline    string
+	Body        string
+	GeneratedAt time.Time
+	DeliveredAt sql.NullTime
+	OpenedAt    sql.NullTime
+}
+
+const briefSchema = `
+CREATE TABLE IF NOT EXISTS briefs (
+    for_date     DATE PRIMARY KEY,
+    headline     TEXT NOT NULL,
+    body         TEXT NOT NULL,
+    generated_at DATETIME NOT NULL,
+    delivered_at DATETIME,
+    opened_at    DATETIME
+);`
+
+// SaveBrief stores the brief for a day, replacing any earlier one. Regenerating
+// is allowed: a brief written at 6am can be stale by 9 when a job moves.
+func (s *Store) SaveBrief(date time.Time, headline, body string) error {
+	_, err := s.db.Exec(`
+        INSERT INTO briefs (for_date, headline, body, generated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(for_date) DO UPDATE SET
+            headline = excluded.headline,
+            body = excluded.body,
+            generated_at = excluded.generated_at`,
+		date.Format("2006-01-02"), headline, body, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("ledger: save brief: %w", err)
+	}
+	return nil
+}
+
+// GetBrief loads a day's brief. A missing brief is not an error — most of the
+// time there simply isn't one yet.
+func (s *Store) GetBrief(date time.Time) (Brief, bool, error) {
+	var b Brief
+	var day string
+	err := s.db.QueryRow(`
+        SELECT for_date, headline, body, generated_at, delivered_at, opened_at
+        FROM briefs WHERE for_date = ?`, date.Format("2006-01-02"),
+	).Scan(&day, &b.Headline, &b.Body, &b.GeneratedAt, &b.DeliveredAt, &b.OpenedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Brief{}, false, nil
+	}
+	if err != nil {
+		return Brief{}, false, fmt.Errorf("ledger: get brief: %w", err)
+	}
+	b.Date, _ = time.Parse("2006-01-02", day)
+	return b, true, nil
+}
+
+// MarkBriefDelivered records that a brief actually reached someone. Delivery is
+// tracked separately from generation because a brief that was written and never
+// arrived looks identical to a working product until churn says otherwise.
+func (s *Store) MarkBriefDelivered(date time.Time) error {
+	_, err := s.db.Exec(`UPDATE briefs SET delivered_at = ? WHERE for_date = ?`,
+		time.Now().UTC(), date.Format("2006-01-02"))
+	if err != nil {
+		return fmt.Errorf("ledger: mark brief delivered: %w", err)
+	}
+	return nil
+}
+
+// MarkBriefOpened records that someone read it.
+func (s *Store) MarkBriefOpened(date time.Time) error {
+	_, err := s.db.Exec(
+		`UPDATE briefs SET opened_at = COALESCE(opened_at, ?) WHERE for_date = ?`,
+		time.Now().UTC(), date.Format("2006-01-02"))
+	if err != nil {
+		return fmt.Errorf("ledger: mark brief opened: %w", err)
+	}
+	return nil
 }

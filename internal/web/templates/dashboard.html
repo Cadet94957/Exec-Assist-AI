@@ -7,6 +7,23 @@
 
   {{if .Notice}}<p class="notice" role="status">{{.Notice}}</p>{{end}}
 
+  {{if .HasBrief}}
+    <section class="brief" aria-labelledby="brief-h">
+      <h2 id="brief-h">Your brief</h2>
+      <div class="card">
+        <p class="headline">{{.Brief.Headline}}</p>
+        <pre class="briefbody">{{.Brief.Body}}</pre>
+        <form method="post" action="/brief" class="refresh">
+          <button class="link quiet">Rewrite it</button>
+        </form>
+      </div>
+    </section>
+  {{else if .BrainReady}}
+    <form method="post" action="/brief" class="briefcta">
+      <button type="submit">Write today's brief</button>
+    </form>
+  {{end}}
+
   {{if .PendingCount}}
     <p class="nudge">
       I've noticed {{.PendingCount}} thing{{if ne .PendingCount 1}}s{{end}} about how you work &mdash;
@@ -14,24 +31,30 @@
     </p>
   {{end}}
 
-  <div class="stats">
-    <div class="stat"><div class="n">{{.Stats.OpenJobs}}</div><div class="l">Open jobs</div></div>
-    <div class="stat"><div class="n">{{len .Appointments}}</div><div class="l">Stops today</div></div>
-    <div class="stat"><div class="n">{{money .Stats.UnpaidCents}}</div><div class="l">Outstanding</div></div>
-  </div>
-
   <section aria-labelledby="stops-h">
-    <h2 id="stops-h" class="visually-hidden">Today's stops</h2>
+    <h2 id="stops-h">{{len .Day.Slots}} stop{{if ne (len .Day.Slots) 1}}s{{end}}</h2>
     <div class="card">
-      {{if .Appointments}}
-        <ul class="stops">
-        {{range .Appointments}}
-          <li>
-            <span class="when">{{time .StartsAt $.Loc}}</span>{{.Title}}
-            {{if .Location.Valid}}<span class="where">{{.Location.String}}</span>{{end}}
+      {{if .Day.Slots}}
+        <ol class="stops plan">
+        {{range .Day.Slots}}
+          <li{{if .Tight}} class="tight"{{end}}>
+            <p class="stopline">
+              <span class="when">{{time .Start $.Loc}}</span>{{.Title}}
+            </p>
+            {{if .Location}}<p class="where">{{.Location}}</p>{{end}}
+            {{if .Overlaps}}
+              <p class="warn">Overlaps the stop before it by {{dur .GapBefore}}.</p>
+            {{else if .Tight}}
+              <p class="warn">Only {{dur .GapBefore}} clear, and your rules ask for {{dur .BufferTotal}}.</p>
+            {{end}}
+            {{range .Notes}}
+              <p class="note{{if not .Trusted}} unsure{{end}}">
+                {{.Text}}{{if not .Trusted}} <span class="status status-inferred">inferred</span>{{end}}
+              </p>
+            {{end}}
           </li>
         {{end}}
-        </ul>
+        </ol>
       {{else if .GoogleConnected}}
         <p class="empty" style="margin:0">Nothing scheduled today.</p>
       {{else}}
@@ -40,6 +63,33 @@
       {{end}}
     </div>
   </section>
+
+  {{if .Changes}}
+    <section aria-labelledby="changed-h">
+      <h2 id="changed-h">Changed since yesterday</h2>
+      <div class="card">
+        <ul class="plainlist">
+        {{range .Changes}}<li>{{.}}</li>{{end}}
+        </ul>
+      </div>
+    </section>
+  {{end}}
+
+  {{if .Money}}
+    <section aria-labelledby="money-h">
+      <h2 id="money-h">Money outstanding</h2>
+      <div class="card">
+        <ul class="plainlist">
+        {{range .Money}}
+          <li>
+            <strong>{{.Amount}}</strong>{{if .Customer}} &mdash; {{.Customer}}{{end}}
+            <span class="muted">{{.Status}}{{if .DueIn}}, {{.DueIn}}{{end}}</span>
+          </li>
+        {{end}}
+        </ul>
+      </div>
+    </section>
+  {{end}}
 
   <section aria-labelledby="ask-h">
     <h2 id="ask-h">Ask me anything</h2>

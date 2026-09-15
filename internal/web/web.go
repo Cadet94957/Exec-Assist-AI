@@ -6,6 +6,7 @@
 package web
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
@@ -20,8 +21,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Cadet94957/Exec-Assist-AI/internal/brief"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/connect/google"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/ledger"
+	"github.com/Cadet94957/Exec-Assist-AI/internal/llm"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/memory"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/obs"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/secrets"
@@ -44,17 +47,19 @@ type Server struct {
 	secure    bool
 	google    google.Config
 	secrets   *secrets.Box
+	brain     *llm.Client
 }
 
 // New builds the server. secret signs session cookies; secure marks them
 // Secure, which should be on everywhere except local development over HTTP.
 // google and box may be zero — the calendar feature then reports itself as
 // unavailable rather than offering a button that fails.
-func New(tenants *tenant.Manager, secret []byte, secure bool, gcfg google.Config, box *secrets.Box) (*Server, error) {
+func New(tenants *tenant.Manager, secret []byte, secure bool, gcfg google.Config, box *secrets.Box, brain *llm.Client) (*Server, error) {
 	funcs := template.FuncMap{
 		"money": func(cents int64) string { return fmt.Sprintf("$%.2f", float64(cents)/100) },
 		"time":  func(t time.Time, loc *time.Location) string { return t.In(loc).Format("Mon 3:04pm") },
 		"date":  func(t time.Time, loc *time.Location) string { return t.In(loc).Format("2 Jan 2006") },
+		"dur":   humanDuration,
 		"ago": func(t sql.NullTime) string {
 			if !t.Valid {
 				return "never"
@@ -83,6 +88,7 @@ func New(tenants *tenant.Manager, secret []byte, secure bool, gcfg google.Config
 		secure:    secure,
 		google:    gcfg,
 		secrets:   box,
+		brain:     brain,
 	}, nil
 }
 
@@ -113,6 +119,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /logout", s.handleLogout)
 	mux.Handle("GET /", s.authed(s.handleDashboard))
 	mux.Handle("GET /settings", s.authed(s.handleSettings))
+	mux.Handle("POST /brief", s.authed(s.handleGenerateBrief))
 	mux.Handle("GET /recall", s.authed(s.handleRecall))
 	// The memory used to live at /learned. Redirect rather than break a
 	// bookmark or a link in an old email.
@@ -289,17 +296,18 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, t tenan
 		return
 	}
 
-	stats, err := stores.Ledger().Stats()
+	now := time.Now()
+	// The same deterministic assembly the brief uses, so the page and the
+	// brief can never disagree about what today looks like.
+	in, err := brief.Assemble(stores, now)
 	if err != nil {
-		s.fail(w, "read your ledger", err)
+		s.fail(w, "work out your day", err)
 		return
 	}
 
-	loc := t.Location()
-	dayStart := t.StartOfDay(time.Now())
-	appts, err := stores.Ledger().Between(dayStart, dayStart.AddDate(0, 0, 1))
+	stats, err := stores.Ledger().Stats()
 	if err != nil {
-		s.fail(w, "read today's schedule", err)
+		s.fail(w, "read your ledger", err)
 		return
 	}
 
@@ -310,24 +318,99 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, t tenan
 	}
 
 	conn, connErr := stores.Ledger().GetConnection(google.Provider)
-	connected := connErr == nil
 	if connErr != nil && !errors.Is(connErr, ledger.ErrNoConnection) {
 		log.Printf("[web] read calendar connection for %s: %v", t.ID, connErr)
+	}
+
+	today, hasBrief, err := stores.Ledger().GetBrief(in.Date)
+	if err != nil {
+		s.fail(w, "read today's brief", err)
+		return
+	}
+	if hasBrief {
+		// Reading it on the page counts as reading it.
+		stores.Ledger().MarkBriefOpened(in.Date) //nolint:errcheck
+		stores.Metrics().Count(obs.BriefOpened)
 	}
 
 	s.render(w, "dashboard.html", map[string]any{
 		"Nav":             "today",
 		"Tenant":          t,
-		"Loc":             loc,
+		"Loc":             in.Loc,
+		"Day":             in.Schedule,
+		"Concerns":        in.Schedule.Concerns(),
+		"Money":           in.Money,
+		"Changes":         in.Changes,
 		"Stats":           stats,
-		"Appointments":    appts,
 		"PendingCount":    len(pending),
-		"Today":           dayStart.Format("Monday, 2 January"),
+		"Today":           in.Date.Format("Monday, 2 January"),
 		"Notice":          r.URL.Query().Get("notice"),
-		"GoogleReady":     s.google.Configured() && s.secrets != nil,
-		"GoogleConnected": connected,
+		"GoogleConnected": connErr == nil,
 		"Connection":      conn,
+		"Brief":           today,
+		"HasBrief":        hasBrief,
+		"BrainReady":      s.brain != nil,
 	})
+}
+
+// handleGenerateBrief writes today's brief on demand. The scheduled 6am run
+// uses the same path, so what someone sees here is what they would have been
+// sent.
+func (s *Server) handleGenerateBrief(w http.ResponseWriter, r *http.Request, t tenant.Tenant) {
+	if s.brain == nil {
+		s.notice(w, r, "The assistant isn't configured on this server yet.")
+		return
+	}
+
+	stores, err := s.tenants.Stores(t.ID)
+	if err != nil {
+		s.fail(w, "open your data", err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+
+	out, err := WriteBrief(ctx, s.brain, stores, time.Now())
+	if err != nil {
+		log.Printf("[brief] %s: %v", t.ID, err)
+		s.notice(w, r, "Couldn't write your brief just now. Nothing has changed.")
+		return
+	}
+	s.notice(w, r, "Brief ready — "+out.Headline)
+}
+
+// WriteBrief assembles, renders, stores and meters one brief. Shared by the
+// button and the 6am scheduler so they cannot drift apart.
+func WriteBrief(ctx context.Context, brain *llm.Client, stores tenant.TenantStore, now time.Time) (brief.Brief, error) {
+	in, err := brief.Assemble(stores, now)
+	if err != nil {
+		return brief.Brief{}, err
+	}
+
+	started := time.Now()
+	out, err := brief.Render(ctx, brain, in)
+
+	stores.Metrics().RecordAI(obs.AICall{
+		Model:      brain.Model(),
+		Operation:  "brief",
+		Input:      out.Usage.Input,
+		Output:     out.Usage.Output,
+		CacheRead:  out.Usage.CacheRead,
+		CacheWrite: out.Usage.CacheWrite,
+		Latency:    time.Since(started),
+		Failed:     err != nil,
+	})
+	if err != nil {
+		stores.Metrics().Count(obs.BriefFailed)
+		return brief.Brief{}, err
+	}
+
+	if err := stores.Ledger().SaveBrief(in.Date, out.Headline, out.Body); err != nil {
+		return out, err
+	}
+	stores.Metrics().Count(obs.BriefGenerated)
+	return out, nil
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request, t tenant.Tenant) {
@@ -429,6 +512,22 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request, t tenant.T
 }
 
 // --- helpers ---
+
+// humanDuration renders a gap the way someone would say it aloud.
+func humanDuration(d time.Duration) string {
+	if d < 0 {
+		d = -d
+	}
+	mins := int(d.Minutes())
+	switch {
+	case mins < 60:
+		return fmt.Sprintf("%d min", mins)
+	case mins%60 == 0:
+		return fmt.Sprintf("%dh", mins/60)
+	default:
+		return fmt.Sprintf("%dh %dmin", mins/60, mins%60)
+	}
+}
 
 func (s *Server) render(w http.ResponseWriter, name string, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
