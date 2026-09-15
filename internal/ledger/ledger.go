@@ -12,6 +12,7 @@ package ledger
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -253,4 +254,42 @@ func (s *Store) RecordRaw(id, source, payload string) error {
 		return fmt.Errorf("ledger: record raw payload %s: %w", id, err)
 	}
 	return nil
+}
+
+// SearchAppointments finds stops whose title or location matches a query.
+//
+// This is the ledger half of "ask me anything": "when did we last do work for
+// Ferguson" is a question about what happened, which memory cannot answer
+// because events are deliberately kept out of it.
+func (s *Store) SearchAppointments(query string, limit int) ([]Appointment, error) {
+	if strings.TrimSpace(query) == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	like := "%" + strings.ToLower(strings.TrimSpace(query)) + "%"
+
+	rows, err := s.db.Query(`
+        SELECT id, job_id, contact_id, property_id, title, starts_at, ends_at,
+               location, source, external_id
+        FROM appointments
+        WHERE LOWER(title) LIKE ? OR LOWER(COALESCE(location, '')) LIKE ?
+        ORDER BY starts_at DESC
+        LIMIT ?`, like, like, limit)
+	if err != nil {
+		return nil, fmt.Errorf("ledger: search appointments: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Appointment
+	for rows.Next() {
+		var a Appointment
+		if err := rows.Scan(&a.ID, &a.JobID, &a.ContactID, &a.PropertyID, &a.Title,
+			&a.StartsAt, &a.EndsAt, &a.Location, &a.Source, &a.ExternalID); err != nil {
+			return nil, fmt.Errorf("ledger: scan appointment: %w", err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }

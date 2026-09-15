@@ -23,6 +23,7 @@ import (
 	"github.com/Cadet94957/Exec-Assist-AI/internal/connect/google"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/ledger"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/memory"
+	"github.com/Cadet94957/Exec-Assist-AI/internal/obs"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/secrets"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/tenant"
 )
@@ -53,6 +54,7 @@ func New(tenants *tenant.Manager, secret []byte, secure bool, gcfg google.Config
 	funcs := template.FuncMap{
 		"money": func(cents int64) string { return fmt.Sprintf("$%.2f", float64(cents)/100) },
 		"time":  func(t time.Time, loc *time.Location) string { return t.In(loc).Format("Mon 3:04pm") },
+		"date":  func(t time.Time, loc *time.Location) string { return t.In(loc).Format("2 Jan 2006") },
 		"ago": func(t sql.NullTime) string {
 			if !t.Valid {
 				return "never"
@@ -160,6 +162,7 @@ func (s *Server) reviewFact(w http.ResponseWriter, r *http.Request, t tenant.Ten
 			s.fail(w, "save that", err)
 			return
 		}
+		stores.Metrics().Count(obs.MemoryConfirmed)
 		s.noticeAt(w, r, "/settings", "Got it — I'll rely on that.")
 		return
 	}
@@ -167,6 +170,7 @@ func (s *Server) reviewFact(w http.ResponseWriter, r *http.Request, t tenant.Ten
 		s.fail(w, "discard that", err)
 		return
 	}
+	stores.Metrics().Count(obs.MemoryRejected)
 	s.noticeAt(w, r, "/settings", "Dropped it.")
 }
 
@@ -394,17 +398,34 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request, t tenant.T
 	}
 
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
-	var results []memory.Recalled
+	var (
+		results []memory.Recalled
+		stops   []ledger.Appointment
+	)
 	if query != "" {
+		stores.Metrics().Count(obs.QuestionAsked)
+
+		// An answer draws on both stores: memory knows the rules, the ledger
+		// knows what actually happened. Neither alone answers "when did we
+		// last do work for Ferguson".
 		results, err = stores.Memory().Recall(query, "", 15)
 		if err != nil {
 			s.fail(w, "search your memory", err)
 			return
 		}
+		stops, err = stores.Ledger().SearchAppointments(query, 5)
+		if err != nil {
+			s.fail(w, "search your jobs", err)
+			return
+		}
 	}
 
-	// HTMX swaps just the results fragment back into the page.
-	s.render(w, "recall_results.html", map[string]any{"Query": query, "Results": results})
+	s.render(w, "recall_results.html", map[string]any{
+		"Query":   query,
+		"Results": results,
+		"Stops":   stops,
+		"Loc":     t.Location(),
+	})
 }
 
 // --- helpers ---

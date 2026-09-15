@@ -1,5 +1,19 @@
 {{if .Query}}
+  {{if .Stops}}
+    <div style="margin-top:14px">
+      <h3 class="reshead">Jobs</h3>
+      <ul class="stops">
+      {{range .Stops}}
+        <li>
+          <span class="when">{{date .StartsAt $.Loc}}</span>{{.Title}}
+          {{if .Location.Valid}}<span class="where">{{.Location.String}}</span>{{end}}
+        </li>
+      {{end}}
+      </ul>
+    </div>
+  {{end}}
   {{if .Results}}
+    <h3 class="reshead">What I know</h3>
     <div style="margin-top:14px">
     {{range .Results}}
       <div class="fact">
@@ -9,7 +23,8 @@
       </div>
     {{end}}
     </div>
-  {{else}}
+  {{end}}
+  {{if and (not .Results) (not .Stops)}}
     <p class="empty" style="margin-top:14px">Nothing on that yet.</p>
   {{end}}
 {{end}}

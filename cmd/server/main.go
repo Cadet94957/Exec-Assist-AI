@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/Cadet94957/Exec-Assist-AI/internal/ledger"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/llm"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/memory"
+	"github.com/Cadet94957/Exec-Assist-AI/internal/obs"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/secrets"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/tenant"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/web"
@@ -51,6 +53,21 @@ func main() {
 		case "backfill":
 			if err := backfill(os.Args[2:]); err != nil {
 				log.Fatalf("backfill: %v", err)
+			}
+			return
+		case "backup":
+			if err := backup(os.Args[2:]); err != nil {
+				log.Fatalf("backup: %v", err)
+			}
+			return
+		case "restore":
+			if err := restore(os.Args[2:]); err != nil {
+				log.Fatalf("restore: %v", err)
+			}
+			return
+		case "verify-restore":
+			if err := verifyRestore(os.Args[2:]); err != nil {
+				log.Fatalf("verify-restore: %v", err)
 			}
 			return
 		}
@@ -157,6 +174,13 @@ func serve() error {
 		go syncLoop(ctx, gcfg, tenants, box)
 	}
 
+	// A backup nobody schedules is a backup nobody has.
+	if dir := os.Getenv("BACKUP_DIR"); dir != "" {
+		go backupLoop(ctx, tenants, dir)
+	} else {
+		log.Print("[backup] BACKUP_DIR is unset — no scheduled backups are running")
+	}
+
 	// Learning runs far less often than syncing: patterns emerge over weeks,
 	// and every pass costs money.
 	if brain != nil {
@@ -232,9 +256,15 @@ func syncAll(ctx context.Context, cfg googleconnect.Config, tenants *tenant.Mana
 		case errors.Is(err, ledger.ErrNoConnection):
 			// Most tenants simply have not connected a calendar.
 		case err != nil:
+			stores.Metrics().Count(obs.SyncFailed)
 			log.Printf("[google] sync %s: %v", t.ID, err)
-		case res.Fetched > 0 || res.Removed > 0:
-			log.Printf("[google] sync %s: %d events, %d removed", t.ID, res.Fetched, res.Removed)
+		default:
+			stores.Metrics().Count(obs.SyncSucceeded)
+			if n := res.Created + res.Changed + res.Removed; n > 0 {
+				stores.Metrics().Value(obs.EventsIngested, float64(n))
+				log.Printf("[google] sync %s: %d new, %d changed, %d removed",
+					t.ID, res.Created, res.Changed, res.Removed)
+			}
 		}
 	}
 }
@@ -249,10 +279,151 @@ func llmConfigFromEnv() llm.Config {
 	}
 }
 
+// backup snapshots every tenant, or one named tenant.
+func backup(args []string) error {
+	fs := flag.NewFlagSet("backup", flag.ExitOnError)
+	id := fs.String("id", "", "tenant to back up; omit for all")
+	dataDir := fs.String("data", envOr("DATA_DIR", "./data"), "data directory")
+	to := fs.String("to", envOr("BACKUP_DIR", "./backups"), "where to write snapshots")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	tenants, err := tenant.NewManager(*dataDir)
+	if err != nil {
+		return err
+	}
+	defer tenants.Close()
+
+	if *id != "" {
+		snap, err := tenants.Backup(*id, *to)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s -> %s (%d bytes)\n", snap.TenantID, snap.Dir, snap.Bytes)
+		return nil
+	}
+
+	snaps, err := tenants.BackupAll(*to)
+	for _, s := range snaps {
+		fmt.Printf("%s -> %s (%d bytes)\n", s.TenantID, s.Dir, s.Bytes)
+	}
+	return err
+}
+
+// restore rebuilds a tenant from a snapshot into a clean data directory.
+func restore(args []string) error {
+	fs := flag.NewFlagSet("restore", flag.ExitOnError)
+	id := fs.String("id", "", "tenant id (required)")
+	from := fs.String("from", "", "snapshot directory (required)")
+	into := fs.String("into", "", "clean data directory to restore into (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *id == "" || *from == "" || *into == "" {
+		fs.Usage()
+		return errors.New("-id, -from and -into are all required")
+	}
+
+	if err := tenant.Restore(*from, *into, *id); err != nil {
+		return err
+	}
+	fmt.Printf("Restored %s into %s\n", *id, filepath.Join(*into, "tenants", *id))
+	fmt.Println("Run verify-restore against it before trusting it.")
+	return nil
+}
+
+// verifyRestore is the operational test §24 requires: back up, restore into a
+// clean directory, open both stores, and read from each. A backup that has
+// never been restored is a file with a reassuring name.
+func verifyRestore(args []string) error {
+	fs := flag.NewFlagSet("verify-restore", flag.ExitOnError)
+	id := fs.String("id", "", "tenant to verify (required)")
+	dataDir := fs.String("data", envOr("DATA_DIR", "./data"), "data directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *id == "" {
+		fs.Usage()
+		return errors.New("-id is required")
+	}
+
+	work, err := os.MkdirTemp("", "restore-check-*")
+	if err != nil {
+		return fmt.Errorf("create scratch directory: %w", err)
+	}
+	defer os.RemoveAll(work)
+
+	tenants, err := tenant.NewManager(*dataDir)
+	if err != nil {
+		return err
+	}
+	defer tenants.Close()
+
+	fmt.Printf("Backing up %s...\n", *id)
+	snap, err := tenants.Backup(*id, filepath.Join(work, "backups"))
+	if err != nil {
+		return err
+	}
+
+	clean := filepath.Join(work, "clean")
+	fmt.Println("Restoring into a clean directory...")
+	if err := tenant.Restore(snap.Dir, clean, *id); err != nil {
+		return err
+	}
+
+	dir := filepath.Join(clean, "tenants", *id)
+	led, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		return fmt.Errorf("open restored ledger: %w", err)
+	}
+	defer led.Close()
+	mem, err := memory.Open(filepath.Join(dir, "memory.db"), led.DB())
+	if err != nil {
+		return fmt.Errorf("open restored memory: %w", err)
+	}
+	defer mem.Close()
+
+	stats, err := led.Stats()
+	if err != nil {
+		return fmt.Errorf("read restored ledger: %w", err)
+	}
+	live, archived, err := mem.Counts()
+	if err != nil {
+		return fmt.Errorf("query restored memory: %w", err)
+	}
+
+	fmt.Printf("\nRestored tenant checks out:\n")
+	fmt.Printf("  ledger: %d contacts, %d jobs, %d appointments\n",
+		stats.Contacts, stats.Jobs, stats.Appointments)
+	fmt.Printf("  memory: %d live facts, %d archived\n", live, archived)
+	fmt.Println("\nBackup and restore verified.")
+	return nil
+}
+
 // extractInterval is how often the assistant re-reads a tenant's recent
 // history looking for rules. Daily is plenty — a weekday pattern does not
 // appear between lunch and dinner — and it keeps per-tenant spend predictable.
 const extractInterval = 24 * time.Hour
+
+// backupLoop snapshots every tenant nightly.
+func backupLoop(ctx context.Context, tenants *tenant.Manager, dest string) {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			snaps, err := tenants.BackupAll(dest)
+			if err != nil {
+				log.Printf("[backup] %v", err)
+			}
+			log.Printf("[backup] snapshotted %d tenants to %s", len(snaps), dest)
+		}
+	}
+}
 
 func extractLoop(ctx context.Context, brain *llm.Client, tenants *tenant.Manager) {
 	ticker := time.NewTicker(extractInterval)
@@ -298,9 +469,29 @@ func runExtract(ctx context.Context, brain *llm.Client, tenants *tenant.Manager,
 	callCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
-	return extract.Run(callCtx, brain,
+	started := time.Now()
+	res, err := extract.Run(callCtx, brain,
 		extract.Stores{Ledger: stores.Ledger(), Memory: stores.Memory()},
 		t.Location(), time.Now())
+
+	// Every model call is recorded, successful or not — an extraction that
+	// keeps failing still costs money and still needs to be visible.
+	if res.Usage.Input > 0 || res.Usage.CacheRead > 0 || err != nil {
+		stores.Metrics().RecordAI(obs.AICall{
+			Model:      brain.Model(),
+			Operation:  "extract",
+			Input:      res.Usage.Input,
+			Output:     res.Usage.Output,
+			CacheRead:  res.Usage.CacheRead,
+			CacheWrite: res.Usage.CacheWrite,
+			Latency:    time.Since(started),
+			Failed:     err != nil,
+		})
+	}
+	if res.Recorded > 0 {
+		stores.Metrics().Value(obs.MemoryProposed, float64(res.Recorded))
+	}
+	return res, err
 }
 
 // backfill runs one extraction pass now, rather than waiting for the daily

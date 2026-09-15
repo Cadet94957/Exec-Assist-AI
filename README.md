@@ -67,6 +67,7 @@ make run                                          # http://localhost:8080
 | `ANTHROPIC_API_KEY` | unset | Turns on learning. Without it, synced data is mirrored but nothing is learned from it. |
 | `ANTHROPIC_MODEL` | `claude-opus-5` | |
 | `ANTHROPIC_BASE_URL` | unset | Point at a gateway, proxy, or stub. Leave unset for Anthropic. |
+| `BACKUP_DIR` | unset | Where nightly tenant snapshots are written. Unset means no scheduled backups. |
 
 ### About embeddings
 
@@ -195,6 +196,31 @@ Duplicate detection matches on the *normalised label*, so "Marriott bills the GC
 main defence is that every run is given the facts already known and told not to restate
 them — but a determined rephrasing can still slip through. Review is where you catch it,
 and discarding is one click and reversible.
+
+## Backups
+
+A successful backup is not evidence the system is safe, so the restore is tested rather
+than assumed.
+
+```sh
+./bin/server backup                       # every tenant
+./bin/server verify-restore -id dave-glass  # back up, restore to a clean dir, read both stores
+```
+
+Set `BACKUP_DIR` and the server snapshots every tenant nightly. Leave it unset and it says
+so at startup rather than pretending.
+
+`verify-restore` is the operational test the spec requires: a backup nobody has ever
+restored is a file with a reassuring name. Run it before you have customers, and on a
+schedule once you do.
+
+## What it costs to run
+
+Every model call is recorded per tenant with its tokens, latency, outcome and an estimated
+cost. Cached reads are priced separately from fresh input — counting them together would
+overstate the bill by roughly what prompt caching saves, hiding the saving the margin
+depends on. Watch the cache hit rate: if it collapses, something is silently invalidating
+the prefix, and that shows up as a bill before it shows up as a bug.
 
 ## Deploying
 

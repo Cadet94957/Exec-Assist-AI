@@ -24,6 +24,7 @@ import (
 
 	"github.com/Cadet94957/Exec-Assist-AI/internal/ledger"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/memory"
+	"github.com/Cadet94957/Exec-Assist-AI/internal/obs"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -77,13 +78,15 @@ type TenantStore interface {
 	Tenant() Tenant
 	Ledger() *ledger.Store
 	Memory() *memory.Store
+	Metrics() *obs.Recorder
 }
 
 // Stores is one tenant's pair of open databases.
 type Stores struct {
-	tenant Tenant
-	ledger *ledger.Store
-	memory *memory.Store
+	tenant  Tenant
+	ledger  *ledger.Store
+	memory  *memory.Store
+	metrics *obs.Recorder
 }
 
 // Tenant returns who these stores belong to.
@@ -94,6 +97,9 @@ func (s *Stores) Ledger() *ledger.Store { return s.ledger }
 
 // Memory is the learned judgement.
 func (s *Stores) Memory() *memory.Store { return s.memory }
+
+// Metrics records what this tenant's assistant did and what it cost.
+func (s *Stores) Metrics() *obs.Recorder { return s.metrics }
 
 // Manager is the tenant registry plus a cache of open store handles.
 type Manager struct {
@@ -287,7 +293,14 @@ func (m *Manager) Stores(id string) (*Stores, error) {
 		return nil, err
 	}
 
-	s := &Stores{tenant: t, ledger: led, memory: mem}
+	rec, err := obs.New(led.DB())
+	if err != nil {
+		mem.Close() //nolint:errcheck
+		led.Close() //nolint:errcheck
+		return nil, err
+	}
+
+	s := &Stores{tenant: t, ledger: led, memory: mem, metrics: rec}
 	m.open[id] = s
 	return s, nil
 }
