@@ -24,6 +24,10 @@
     </form>
   {{end}}
 
+  {{if .PushReady}}
+    <p class="pushcta"><button type="button" id="enable-push" class="link">Get your brief at 6am</button></p>
+  {{end}}
+
   {{if .PendingCount}}
     <p class="nudge">
       I've noticed {{.PendingCount}} thing{{if ne .PendingCount 1}}s{{end}} about how you work &mdash;

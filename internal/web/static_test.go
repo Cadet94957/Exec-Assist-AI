@@ -8,13 +8,14 @@ import (
 	"testing"
 
 	"github.com/Cadet94957/Exec-Assist-AI/internal/connect/google"
+	"github.com/Cadet94957/Exec-Assist-AI/internal/push"
 )
 
 // routes builds a server with no tenant manager — enough for the static and
 // health routes, which need no session.
 func staticRoutes(t *testing.T) http.Handler {
 	t.Helper()
-	s, err := New(nil, []byte("a-test-secret-at-least-32-chars-long"), false, googleZero(), nil, nil)
+	s, err := New(nil, []byte("a-test-secret-at-least-32-chars-long"), false, googleZero(), nil, nil, push.Keys{})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}

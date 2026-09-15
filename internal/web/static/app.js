@@ -42,6 +42,62 @@
     });
   });
 
+  // --- notifications ---
+  // Subscribing needs an explicit gesture: a permission prompt fired on page
+  // load is the fastest way to get permanently denied.
+  async function enableNotifications(button) {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        button.textContent = 'Notifications are blocked in your browser';
+        button.disabled = true;
+        return;
+      }
+
+      const res = await fetch('/push/key', { credentials: 'same-origin' });
+      const { key } = await res.json();
+      if (!key) throw new Error('no key');
+
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(key),
+      });
+
+      const saved = await fetch('/push/subscribe', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sub),
+      });
+      if (!saved.ok) throw new Error('save failed');
+
+      button.textContent = "You'll get your brief at 6am";
+      button.disabled = true;
+    } catch (e) {
+      // The usual cause is a browser that cannot reach its push service, which
+      // is nothing the person reading this can fix. Keep the message plain and
+      // put the real reason where it can be debugged.
+      console.warn('push subscription failed:', e);
+      button.textContent = "Couldn't turn notifications on";
+      button.disabled = true;
+    }
+  }
+
+  // The VAPID key arrives base64url-encoded; the subscribe API wants bytes.
+  function urlBase64ToUint8Array(base64) {
+    const padded = (base64 + '='.repeat((4 - (base64.length % 4)) % 4))
+      .replace(/-/g, '+')
+      .replace(/_/g, '/');
+    const raw = atob(padded);
+    return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+  }
+
+  document.addEventListener('click', function (event) {
+    const button = event.target.closest ? event.target.closest('#enable-push') : null;
+    if (button) enableNotifications(button);
+  });
+
   // --- live search --------------------------------------------------------
   // An input marked data-search="<url>" fetches into data-target as the user
   // types. This is the whole reason htmx was here; fifteen lines is a better

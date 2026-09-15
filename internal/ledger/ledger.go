@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS connections (
 `
 
 func (s *Store) migrate() error {
-	for _, stmt := range []string{schema, briefSchema} {
+	for _, stmt := range []string{schema, briefSchema, pushSchema} {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("ledger: migrate %s: %w", s.path, err)
 		}

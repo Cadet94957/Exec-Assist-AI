@@ -30,6 +30,7 @@ import (
 	"github.com/Cadet94957/Exec-Assist-AI/internal/llm"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/memory"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/obs"
+	"github.com/Cadet94957/Exec-Assist-AI/internal/push"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/secrets"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/tenant"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/web"
@@ -54,6 +55,15 @@ func main() {
 			if err := backfill(os.Args[2:]); err != nil {
 				log.Fatalf("backfill: %v", err)
 			}
+			return
+		case "vapid-keys":
+			keys, err := push.GenerateKeys(envOr("VAPID_SUBJECT", "mailto:support@example.com"))
+			if err != nil {
+				log.Fatalf("vapid-keys: %v", err)
+			}
+			fmt.Printf("VAPID_PUBLIC_KEY=%s\nVAPID_PRIVATE_KEY=%s\n\n", keys.Public, keys.Private)
+			fmt.Println("Set both as secrets. Never rotate them casually: every existing")
+			fmt.Println("subscription becomes invalid and notifications stop silently.")
 			return
 		case "backup":
 			if err := backup(os.Args[2:]); err != nil {
@@ -149,7 +159,16 @@ func serve() error {
 		log.Print("[extract] ANTHROPIC_API_KEY is unset — nothing will be learned from synced data")
 	}
 
-	site, err := web.New(tenants, secret, os.Getenv("INSECURE_COOKIES") != "1", gcfg, box, brain)
+	vapid := push.Keys{
+		Public:  os.Getenv("VAPID_PUBLIC_KEY"),
+		Private: os.Getenv("VAPID_PRIVATE_KEY"),
+		Subject: envOr("VAPID_SUBJECT", "mailto:support@example.com"),
+	}
+	if !vapid.Configured() {
+		log.Print("[push] VAPID keys are unset — briefs will be written but not delivered (run: server vapid-keys)")
+	}
+
+	site, err := web.New(tenants, secret, os.Getenv("INSECURE_COOKIES") != "1", gcfg, box, brain, vapid)
 	if err != nil {
 		return err
 	}
@@ -179,6 +198,13 @@ func serve() error {
 		go backupLoop(ctx, tenants, dir)
 	} else {
 		log.Print("[backup] BACKUP_DIR is unset — no scheduled backups are running")
+	}
+
+	// The morning brief. Runs on a short tick and fires per tenant when their
+	// own local clock reaches the hour — a Los Angeles glazier and a New York
+	// one both get 6am, not one of them getting 3am.
+	if brain != nil {
+		go briefLoop(ctx, brain, tenants, push.NewSender(vapid))
 	}
 
 	// Learning runs far less often than syncing: patterns emerge over weeks,
@@ -405,6 +431,76 @@ func verifyRestore(args []string) error {
 // history looking for rules. Daily is plenty — a weekday pattern does not
 // appear between lunch and dinner — and it keeps per-tenant spend predictable.
 const extractInterval = 24 * time.Hour
+
+// briefHour is when the brief goes out, in each tenant's own timezone.
+const briefHour = 6
+
+// briefLoop writes and delivers each tenant's brief at 6am local.
+//
+// It ticks every fifteen minutes and asks whether a tenant is due, rather than
+// scheduling a timer per tenant: timers drift across DST and are awkward to
+// reason about after a restart, and a brief is not worth that complexity.
+func briefLoop(ctx context.Context, brain *llm.Client, tenants *tenant.Manager, sender *push.Sender) {
+	ticker := time.NewTicker(15 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			briefRound(ctx, brain, tenants, sender)
+		}
+	}
+}
+
+func briefRound(ctx context.Context, brain *llm.Client, tenants *tenant.Manager, sender *push.Sender) {
+	all, err := tenants.List()
+	if err != nil {
+		log.Printf("[brief] list tenants: %v", err)
+		return
+	}
+
+	now := time.Now()
+	for _, t := range all {
+		if ctx.Err() != nil {
+			return
+		}
+		local := now.In(t.Location())
+		if local.Hour() != briefHour {
+			continue
+		}
+
+		stores, err := tenants.Stores(t.ID)
+		if err != nil {
+			log.Printf("[brief] open %s: %v", t.ID, err)
+			continue
+		}
+
+		// One brief per day. The tick is finer than the hour, so without this
+		// a tenant would get four notifications between 6:00 and 6:59.
+		day := t.StartOfDay(now)
+		if _, exists, err := stores.Ledger().GetBrief(day); err == nil && exists {
+			continue
+		}
+
+		callCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		out, err := web.WriteBrief(callCtx, brain, stores, now)
+		if err != nil {
+			cancel()
+			log.Printf("[brief] write %s: %v", t.ID, err)
+			continue
+		}
+
+		delivered, err := web.Deliver(callCtx, sender, stores, out, day)
+		cancel()
+		if err != nil {
+			log.Printf("[brief] deliver %s: %v", t.ID, err)
+			continue
+		}
+		log.Printf("[brief] %s: written, delivered to %d device(s)", t.ID, delivered)
+	}
+}
 
 // backupLoop snapshots every tenant nightly.
 func backupLoop(ctx context.Context, tenants *tenant.Manager, dest string) {

@@ -68,6 +68,9 @@ make run                                          # http://localhost:8080
 | `ANTHROPIC_MODEL` | `claude-opus-5` | |
 | `ANTHROPIC_BASE_URL` | unset | Point at a gateway, proxy, or stub. Leave unset for Anthropic. |
 | `BACKUP_DIR` | unset | Where nightly tenant snapshots are written. Unset means no scheduled backups. |
+| `VAPID_PUBLIC_KEY` | unset | From `server vapid-keys`. Unset means briefs are written but not delivered. |
+| `VAPID_PRIVATE_KEY` | unset | " |
+| `VAPID_SUBJECT` | `mailto:support@example.com` | Contact URL push services use to reach you. |
 
 ### About embeddings
 
@@ -197,6 +200,39 @@ main defence is that every run is given the facts already known and told not to 
 them — but a determined rephrasing can still slip through. Review is where you catch it,
 and discarding is one click and reversible.
 
+## The morning brief
+
+Assembled deterministically, then written by Claude.
+
+`brief.Assemble` reads the ledger and the memory graph and builds a typed day in pure Go —
+stops in order, gaps measured, overlaps detected, buffers pulled from standing rules,
+outstanding money, and what moved since yesterday. `brief.Render` hands that to Claude for
+synthesis and wording only.
+
+The split decides what can go wrong. A model that writes badly produces an awkward brief.
+A model asked to work out whether a day is feasible, or which invoice is overdue, produces
+a confident wrong answer — and the whole product is a promise to catch exactly that.
+
+Every fact reaches the prompt marked `confirmed`, `observed` or `inferred`, and the prompt
+must hedge anything unconfirmed: *"you usually allow about 45 minutes"*, never *"you need
+45 minutes"*. A test asserts the marking survives into the request, because this is the
+rule that either holds there or is lost silently.
+
+### Notifications
+
+```sh
+./bin/server vapid-keys      # once; set both as secrets
+```
+
+Briefs go out at 6am in each tenant's own timezone. **Never rotate the VAPID keys
+casually** — every existing subscription becomes invalid and notifications stop silently.
+
+Push only reaches people who installed the app, and on iOS only when installed to the home
+screen. That is why every send is recorded: if delivery numbers come back low during the
+pilot, the pilot is measuring installation rather than the brief, and the fix is another
+channel — not the conclusion that nobody wanted it. SMS arrives in Phase 2 as a second
+`Deliverer`, not a rewrite.
+
 ## Backups
 
 A successful backup is not evidence the system is safe, so the restore is tested rather
@@ -245,13 +281,18 @@ reason — a stopped machine is a missed 6am brief.
 
 ## Where this is up to
 
-Phases 0, 1 and 2 are done. What works today: tenants, both stores, the `why_matters`
-guard, sign-in, the Today screen, Settings with an editable memory, recall by text, Google
-Calendar connection with background sync, the extraction pass with its review queue, and
-the installable desktop app.
+Phase 0 and Phase 1 of the revised spec are done. What works today: tenants, both stores, the `why_matters`
+guard, sign-in, the Today screen showing the day as a plan, Settings with an editable memory,
+ask-anything across both stores, Google Calendar with typed-event sync, the extraction
+pass with its review queue, the morning brief with web push at 6am local, backups with a
+proven restore, observability, and the installable desktop app.
 
-Not built yet: magic-link sign-in, the inbound email address and universal webhook, the
-morning and evening briefs over SMS, and billing.
+**Next is not a feature.** The spec's Phase 1.5 is a hard gate: recruit three to five
+glaziers, charge them, and do not build Phase 2 until at least three keep paying.
+
+Not built yet, and deliberately: SMS (Phase 2), the deterministic conflict engine
+(Phase 3), inbound email and the universal webhook (Phase 4), signup and billing
+(Phase 5).
 
 Two things are unverified here because they need live credentials: the Google OAuth token
 exchange, and a real Claude call. Everything either side of them is covered by tests that

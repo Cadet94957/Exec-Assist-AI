@@ -12,9 +12,11 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -27,6 +29,7 @@ import (
 	"github.com/Cadet94957/Exec-Assist-AI/internal/llm"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/memory"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/obs"
+	"github.com/Cadet94957/Exec-Assist-AI/internal/push"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/secrets"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/tenant"
 )
@@ -48,13 +51,14 @@ type Server struct {
 	google    google.Config
 	secrets   *secrets.Box
 	brain     *llm.Client
+	vapid     push.Keys
 }
 
 // New builds the server. secret signs session cookies; secure marks them
 // Secure, which should be on everywhere except local development over HTTP.
 // google and box may be zero — the calendar feature then reports itself as
 // unavailable rather than offering a button that fails.
-func New(tenants *tenant.Manager, secret []byte, secure bool, gcfg google.Config, box *secrets.Box, brain *llm.Client) (*Server, error) {
+func New(tenants *tenant.Manager, secret []byte, secure bool, gcfg google.Config, box *secrets.Box, brain *llm.Client, vapid push.Keys) (*Server, error) {
 	funcs := template.FuncMap{
 		"money": func(cents int64) string { return fmt.Sprintf("$%.2f", float64(cents)/100) },
 		"time":  func(t time.Time, loc *time.Location) string { return t.In(loc).Format("Mon 3:04pm") },
@@ -89,6 +93,7 @@ func New(tenants *tenant.Manager, secret []byte, secure bool, gcfg google.Config
 		google:    gcfg,
 		secrets:   box,
 		brain:     brain,
+		vapid:     vapid,
 	}, nil
 }
 
@@ -120,6 +125,8 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /", s.authed(s.handleDashboard))
 	mux.Handle("GET /settings", s.authed(s.handleSettings))
 	mux.Handle("POST /brief", s.authed(s.handleGenerateBrief))
+	mux.Handle("GET /push/key", s.authed(s.handlePushKey))
+	mux.Handle("POST /push/subscribe", s.authed(s.handlePushSubscribe))
 	mux.Handle("GET /recall", s.authed(s.handleRecall))
 	// The memory used to live at /learned. Redirect rather than break a
 	// bookmark or a link in an old email.
@@ -350,6 +357,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, t tenan
 		"Brief":           today,
 		"HasBrief":        hasBrief,
 		"BrainReady":      s.brain != nil,
+		"PushReady":       s.vapid.Configured(),
 	})
 }
 
@@ -378,6 +386,87 @@ func (s *Server) handleGenerateBrief(w http.ResponseWriter, r *http.Request, t t
 		return
 	}
 	s.notice(w, r, "Brief ready — "+out.Headline)
+}
+
+// handlePushKey hands the browser the public VAPID key it needs to subscribe.
+func (s *Server) handlePushKey(w http.ResponseWriter, r *http.Request, t tenant.Tenant) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	json.NewEncoder(w).Encode(map[string]string{"key": s.vapid.Public}) //nolint:errcheck
+}
+
+// handlePushSubscribe records a browser's push endpoint.
+func (s *Server) handlePushSubscribe(w http.ResponseWriter, r *http.Request, t tenant.Tenant) {
+	if !s.vapid.Configured() {
+		http.Error(w, "push is not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	var sub push.Subscription
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&sub); err != nil || !sub.Valid() {
+		http.Error(w, "bad subscription", http.StatusBadRequest)
+		return
+	}
+
+	stores, err := s.tenants.Stores(t.ID)
+	if err != nil {
+		s.fail(w, "open your data", err)
+		return
+	}
+	if err := stores.Ledger().SavePushSubscription(ledger.PushSubscription{
+		Endpoint: sub.Endpoint, P256dh: sub.Keys.P256dh, Auth: sub.Keys.Auth,
+	}); err != nil {
+		s.fail(w, "save your notification settings", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// Deliver sends a brief to every device a tenant has installed, and records
+// what actually happened. Push reaches only installed apps, so a silent
+// non-delivery has to show up as data rather than as an unexplained absence.
+func Deliver(ctx context.Context, sender *push.Sender, stores tenant.TenantStore, b brief.Brief, date time.Time) (int, error) {
+	subs, err := stores.Ledger().PushSubscriptions()
+	if err != nil {
+		return 0, err
+	}
+	if len(subs) == 0 {
+		return 0, nil
+	}
+
+	msg := push.Message{
+		Title: "Your brief",
+		Body:  b.Headline,
+		URL:   "/",
+		Tag:   "brief-" + date.Format("2006-01-02"),
+	}
+
+	var delivered int
+	for _, sub := range subs {
+		s := push.Subscription{Endpoint: sub.Endpoint}
+		s.Keys.P256dh = sub.P256dh
+		s.Keys.Auth = sub.Auth
+
+		err := sender.Send(ctx, s, msg)
+		switch {
+		case errors.Is(err, push.ErrGone):
+			// The browser forgot us. Housekeeping, not an incident.
+			stores.Ledger().DeletePushSubscription(sub.Endpoint) //nolint:errcheck
+		case err != nil:
+			log.Printf("[push] %s: %v", stores.Tenant().ID, err)
+		default:
+			delivered++
+			stores.Ledger().MarkPushDelivered(sub.Endpoint) //nolint:errcheck
+		}
+	}
+
+	if delivered > 0 {
+		stores.Ledger().MarkBriefDelivered(date) //nolint:errcheck
+		stores.Metrics().Value(obs.BriefDelivered, float64(delivered))
+	} else {
+		stores.Metrics().Count(obs.BriefFailed)
+	}
+	return delivered, nil
 }
 
 // WriteBrief assembles, renders, stores and meters one brief. Shared by the
