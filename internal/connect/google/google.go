@@ -24,14 +24,27 @@ import (
 	googleoauth "golang.org/x/oauth2/google"
 )
 
-// Scope covers reading and writing calendar events. It is a "sensitive" scope
-// in Google's classification, not a "restricted" one — so it needs OAuth
-// consent-screen verification but not the CASA security assessment that Gmail
-// read access would demand.
+// Scope is read-only, and deliberately so. This product reads a contractor's
+// calendar to tell them about their day; it has no reason to ever change one.
 //
-// Write access is requested now even though this phase only reads: adding it
-// later would force every existing customer through a second consent screen.
-const Scope = "https://www.googleapis.com/auth/calendar.events"
+// An earlier version of this file requested the read-write scope on the theory
+// that asking later would force existing customers through a second consent
+// screen. That is a real cost, but it buys convenience with permission we have
+// no code to use — and it is the customer's calendar, not ours, that carries
+// the risk. The readonly scope means a stolen or mis-issued token cannot delete
+// a glazier's week even if every other guard in this codebase fails.
+//
+// The consent screen a contractor reads is the other half of the argument. With
+// this scope Google shows "See the events on all your calendars". With the
+// read-write one it shows "See, edit, share and permanently delete all the
+// calendars you can access" — which is a hard sentence to follow with "trust
+// us". If a future phase genuinely needs to write, it asks for that separately,
+// with its own review, and earns the second consent screen.
+//
+// It stays a "sensitive" scope in Google's classification, not a "restricted"
+// one, so it needs consent-screen verification but not the CASA security
+// assessment that Gmail read access would demand.
+const Scope = "https://www.googleapis.com/auth/calendar.events.readonly"
 
 // DefaultBaseURL is Google's Calendar v3 root.
 const DefaultBaseURL = "https://www.googleapis.com/calendar/v3"

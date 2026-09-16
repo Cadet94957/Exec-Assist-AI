@@ -89,8 +89,9 @@ This is the one step nobody can do for you — it needs your Google account.
 2. **Enable the Google Calendar API** (APIs & Services → Library → search "Google
    Calendar API" → Enable).
 3. **Configure the OAuth consent screen.** Choose *External*. Add the scopes
-   `.../auth/calendar.events` and `.../auth/userinfo.email`. Add yourself under *Test
-   users*.
+   `.../auth/calendar.events.readonly` and `.../auth/userinfo.email`. Add yourself under
+   *Test users*. Note the `.readonly` — see [This product reads](#this-product-reads)
+   below.
 4. **Create credentials**: APIs & Services → Credentials → Create Credentials → OAuth
    client ID → *Web application*. Under *Authorized redirect URIs* add exactly the value
    you will set as `GOOGLE_REDIRECT_URL` — a trailing-slash mismatch is rejected.
@@ -103,12 +104,37 @@ works, then breaks a week later for no visible reason. That is Google's behaviou
 unpublished apps, not a bug here. Publish the app when you start piloting with real
 contractors.
 
-**Publishing needs verification because `calendar.events` is a "sensitive" scope.** That
+**Publishing needs verification because `calendar.events.readonly` is a "sensitive" scope.** That
 means a review of your consent screen and a privacy policy — annoying, but weeks not
 months. It is *not* the CASA Tier 2 security assessment; that is only for "restricted"
 scopes, which is exactly why this product does not touch Gmail. Until you are verified,
 an unverified app shows a warning screen and is capped at 100 users, which is plenty for
 a pilot.
+
+### This product reads
+
+The Google scope is `calendar.events.readonly`, and that is a deliberate constraint rather
+than a phase we have not got to yet.
+
+This assistant exists to tell a contractor about their day. It has no reason to ever
+change their calendar, so it does not ask for permission to. That means a stolen token, a
+bug, or a mis-issued credential cannot delete a glazier's week — not because the code is
+careful, but because there is no code that could. `internal/connect/google` makes exactly
+one HTTP request and it is a `GET`, and `TestClientIsReadOnly` fails the build if that
+ever stops being true.
+
+It also changes the sentence a contractor reads before trusting you. With this scope,
+Google's consent screen says *"See the events on all your calendars."* With the read-write
+scope it says *"See, edit, share and permanently delete all the calendars you can
+access"* — which is a hard thing to follow with "trust us."
+
+**If you connected a calendar before this change, disconnect and reconnect it.** Existing
+tokens keep the old, wider permission until they are re-issued. Settings → Disconnect,
+then connect again, and check the consent screen wording while you are there.
+
+The same rule holds going forward: Gmail, when it arrives, is `gmail.readonly`. Any
+future need to write is a separate decision with its own scope, its own consent screen and
+its own review — never a permission requested early "just in case."
 
 ### How the sync behaves
 
@@ -309,6 +335,9 @@ fly secrets set TOKEN_KEY="$(openssl rand -hex 32)"
 ./bin/server vapid-keys        # then: fly secrets set VAPID_PUBLIC_KEY=... VAPID_PRIVATE_KEY=...
 
 # 5. The outside world.
+#    Before pasting this key: set a monthly spend limit on it in the Anthropic
+#    console. See "Cap the spend" below — it takes two minutes and it is the
+#    only thing standing between a retry bug and a surprise bill.
 fly secrets set ANTHROPIC_API_KEY=sk-ant-...
 fly secrets set VOYAGE_API_KEY=pa-...
 fly secrets set GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... \
@@ -324,6 +353,21 @@ fly ssh console -C "/usr/local/bin/server create-tenant -id you -name 'Your Busi
 # 8. Prove the backups before you have anyone else's data.
 fly ssh console -C "/usr/local/bin/server verify-restore -id you"
 ```
+
+### Cap the spend
+
+Do this in the Anthropic console before the key ever runs in production: set a **monthly
+spend limit** on it, or fund the account with a virtual card holding a small balance.
+
+The app measures what it spends — `ai_usage` records every call in integer micros, and
+`/admin` totals it — but measuring is not stopping. A retry loop running unattended
+overnight is the classic way a hobby project produces a bill you did not agree to, and no
+amount of care in the prompt prevents it. The ceiling has to be something the API enforces,
+not something the code intends.
+
+Pick a number you would be annoyed but not hurt by. At one brief plus a handful of
+questions per contractor per day, real usage for a five-person pilot is small; the limit is
+there for the case where something goes wrong, not for the case where it goes right.
 
 ### What to check after the first deploy
 
@@ -359,6 +403,31 @@ glaziers, charge them, and do not build Phase 2 until at least three keep paying
 Not built yet, and deliberately: SMS (Phase 2), the deterministic conflict engine
 (Phase 3), inbound email and the universal webhook (Phase 4), signup and billing
 (Phase 5).
+
+### Hardening deferred until there are paying customers
+
+A review against the failure modes people report from running agents in production turned
+up four more guards. Three are deferred on purpose — they defend against problems this
+product does not have at five customers you can phone, and the MVP is better without them:
+
+- **A replayable trace of model calls.** `ai_usage` records what each call cost but not
+  what it said, so a wrong brief cannot be reconstructed after the fact. At pilot scale you
+  can just ask the contractor what it told them. Worth building before you have customers
+  you cannot phone.
+- **An in-code daily cost breaker.** The spend limit on the API key covers the case that
+  actually hurts. A per-tenant breaker matters once one tenant's runaway usage could
+  degrade another's service.
+- **Rate limiting.** There is none. Behind key-based sign-in with a handful of known users
+  this is close to theoretical; it stops being theoretical at self-serve signup (Phase 5),
+  which is also when `POST /login` becomes worth brute-forcing.
+
+The fourth is a real gap with a specific catch, recorded so it is not rediscovered the hard
+way: **the container runs as root.** Adding a `USER` directive alone does not work, because
+Fly creates a root-owned filesystem when it mounts the volume at `/data` and that mount
+covers whatever the image did — the server then starts and cannot open its database, which
+looks exactly like a SQLite bug. The fix is an entrypoint that chowns the mounted volume as
+root and then drops privileges with `gosu`. Small, but it needs a real container daemon to
+verify, and an unverified change here breaks the deploy rather than degrading it.
 
 Two things are unverified here because they need live credentials: the Google OAuth token
 exchange, and a real Claude call. Everything either side of them is covered by tests that
