@@ -59,6 +59,10 @@ A short opener naming how many stops. Then the stops in order, each with its tim
 
 If there is nothing on today, say so in one line and mention only outstanding money or changes if there are any.`
 
+// RenderInput exposes the assembled prompt body for evaluation, so the eval
+// can check the answer against exactly what was asked.
+func RenderInput(in Input) string { return renderInput(in) }
+
 // renderInput lays the day out for the model. Every fact carries its status,
 // because the prompt's hedging rule is only as good as the marking it reads.
 func renderInput(in Input) string {

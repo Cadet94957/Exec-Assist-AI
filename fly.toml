@@ -9,6 +9,26 @@ primary_region = "sea"
 [env]
   PORT = "8080"
   DATA_DIR = "/data"
+  # Without this the nightly backup loop never starts. The server says so at
+  # boot, but a log line is easy to miss, and a product whose restore is tested
+  # while its backup never runs is worse than one with neither — it feels safe.
+  BACKUP_DIR = "/data/backups"
+  VAPID_SUBJECT = "mailto:support@example.com"
+
+# Everything else is a secret and is set with `fly secrets set`, never here:
+#   SESSION_SECRET        signs session cookies (32+ chars)
+#   TOKEN_KEY             encrypts stored Google tokens (openssl rand -hex 32)
+#   ANTHROPIC_API_KEY     the assistant; without it nothing is learned or written
+#   VOYAGE_API_KEY        embeddings; without it recall falls back to literal matching
+#   VAPID_PUBLIC_KEY      from `server vapid-keys`
+#   VAPID_PRIVATE_KEY     "
+#   GOOGLE_CLIENT_ID      calendar connection
+#   GOOGLE_CLIENT_SECRET  "
+#   GOOGLE_REDIRECT_URL   https://<your-domain>/connect/google/callback
+#
+# Rotating TOKEN_KEY makes every stored calendar token unreadable, and rotating
+# the VAPID keys silently invalidates every push subscription. Neither is a
+# routine operation.
 
 [[mounts]]
   source = "exec_assist_data"

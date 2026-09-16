@@ -218,6 +218,36 @@ must hedge anything unconfirmed: *"you usually allow about 45 minutes"*, never *
 45 minutes"*. A test asserts the marking survives into the request, because this is the
 rule that either holds there or is lost silently.
 
+### Measuring the prompt
+
+```sh
+make eval      # calls the real API; costs a few cents
+```
+
+The brief prompt is the product, and it is what will get tuned once pilot feedback
+arrives. Without a measurement that tuning is guesswork that can silently break the two
+rules everything rests on: never invent, and never state a guess as fact.
+
+Six fixture days — quiet, ordinary, one carrying an inferred fact, one with money owed,
+one with a cancellation, and one with an injection attempt buried in a calendar title —
+each checked programmatically:
+
+- **No invented numbers.** Every number in the brief must appear in the data. Times,
+  amounts and gate codes are exactly what a contractor acts on.
+- **No invented names.** A customer or site the data never mentioned is a fabrication.
+- **Hedging.** A brief carrying an inferred fact must hedge it. "You usually allow about
+  45 minutes" passes; "you need 45 minutes" fails.
+- **Brevity** on a quiet day, and a headline that fits a lock screen.
+- **Coverage** — the tight gap, the overdue invoice, the cancellation each have to
+  actually make it in.
+
+It prints per-case cost, so the trade-off between prompt quality and spend is visible
+rather than guessed at. The checks are programmatic rather than judged by another model:
+"did it invent a number" has an exact answer, and an exact answer beats a plausible
+opinion for the rule whose violation is the failure the product exists to prevent.
+
+`make check` stays free and offline — the eval is behind a build tag.
+
 ### Notifications
 
 ```sh
@@ -260,15 +290,51 @@ the prefix, and that shows up as a bill before it shows up as a bug.
 
 ## Deploying
 
+Do these in order. Step 1 first because it is the step that has never run here —
+this environment has no container daemon, so the image build is the one piece of the
+deploy that is genuinely unverified.
+
 ```sh
+# 1. Prove the image builds. cgo + sqlite-vec is where this breaks if it breaks.
+docker build -t exec-assist .
+
+# 2. A volume, before anything writes to it.
 fly volumes create exec_assist_data --size 3
+
+# 3. Secrets. Generate the two local ones rather than inventing them.
 fly secrets set SESSION_SECRET="$(openssl rand -hex 32)"
 fly secrets set TOKEN_KEY="$(openssl rand -hex 32)"
+
+# 4. Push keys. Print them once, set them, and do not regenerate later.
+./bin/server vapid-keys        # then: fly secrets set VAPID_PUBLIC_KEY=... VAPID_PRIVATE_KEY=...
+
+# 5. The outside world.
+fly secrets set ANTHROPIC_API_KEY=sk-ant-...
+fly secrets set VOYAGE_API_KEY=pa-...
 fly secrets set GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... \
                 GOOGLE_REDIRECT_URL=https://yourdomain/connect/google/callback
-fly secrets set ANTHROPIC_API_KEY=sk-ant-...
+
+# 6. Deploy, then set VAPID_SUBJECT in fly.toml to a real contact address.
 make deploy
+
+# 7. Make yourself tenant #1 and check the whole loop works on real data.
+fly ssh console -C "/usr/local/bin/server create-tenant -id you -name 'Your Business' -tz America/Los_Angeles"
+#    ...then sign in, connect your calendar, and write a brief.
+
+# 8. Prove the backups before you have anyone else's data.
+fly ssh console -C "/usr/local/bin/server verify-restore -id you"
 ```
+
+### What to check after the first deploy
+
+The startup log names every disabled feature. Read it once — each line is something
+silently not happening:
+
+- `[push] VAPID keys are unset` — briefs are written but never delivered
+- `[backup] BACKUP_DIR is unset` — **nothing is being backed up**
+- `[google] ... calendar connection is disabled` — no calendar, so no day
+- `[extract] ANTHROPIC_API_KEY is unset` — nothing is learned
+- `[embed] no VOYAGE_API_KEY set` — recall works but only matches literally
 
 **Never rotate `TOKEN_KEY` casually.** It decrypts stored Google tokens; changing it makes
 every existing calendar connection unreadable and every contractor has to reconnect.

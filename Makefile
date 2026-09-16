@@ -21,7 +21,10 @@ run: build ## Run locally on :8080 with insecure cookies
 tenant: build ## Create a tenant: make tenant ID=dave-glass NAME="Dave's Glass"
 	./bin/server create-tenant -id "$(ID)" -name "$(NAME)" -tz "$(or $(TZ),UTC)"
 
+eval: ## Measure the brief prompt against the real API (costs money)
+	CGO_ENABLED=1 go test -tags eval -v -count=1 ./internal/brief/eval/
+
 deploy: check ## Deploy to Fly (only after check passes)
 	fly deploy
 
-.PHONY: help build test check run tenant deploy
+.PHONY: help build test check run tenant eval deploy
