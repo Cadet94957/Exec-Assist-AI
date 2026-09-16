@@ -27,11 +27,7 @@ const oauthStateTTL = 15 * time.Minute
 
 // handleConnectGoogle sends the contractor to Google's consent screen.
 func (s *Server) handleConnectGoogle(w http.ResponseWriter, r *http.Request, t tenant.Tenant) {
-	if !s.google.Configured() {
-		s.noticeAt(w, r, "/settings", "Calendar connection isn't available yet. Please contact support.")
-		return
-	}
-	if s.secrets == nil {
+	if !s.google.Configured() || s.secrets == nil {
 		s.noticeAt(w, r, "/settings", "Calendar connection isn't available yet. Please contact support.")
 		return
 	}
@@ -41,7 +37,6 @@ func (s *Server) handleConnectGoogle(w http.ResponseWriter, r *http.Request, t t
 // handleGoogleCallback completes the consent round trip.
 func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request, t tenant.Tenant) {
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
-		// access_denied is someone pressing Cancel, not a fault.
 		if errParam == "access_denied" {
 			s.noticeAt(w, r, "/settings", "Calendar not connected — no changes were made.")
 			return
@@ -51,9 +46,6 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request, t 
 		return
 	}
 
-	// The state must be one we issued, unexpired, and for the tenant whose
-	// session is making this request — otherwise someone else's calendar could
-	// be attached to this account.
 	if !s.verifyState(r.URL.Query().Get("state"), t.ID) {
 		s.noticeAt(w, r, "/settings", "That connection link expired. Please start again.")
 		return
@@ -78,12 +70,6 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request, t 
 	stores, err := s.tenants.Stores(t.ID)
 	if err != nil {
 		s.fail(w, "open your data", err)
-		return
-	}
-
-	if s.secrets == nil {
-		log.Printf("[google] refusing to store a token for %s: TOKEN_KEY is not set", t.ID)
-		s.noticeAt(w, r, "/settings", "Calendar connection isn't available yet. Please contact support.")
 		return
 	}
 
@@ -133,15 +119,29 @@ func (s *Server) handleSyncGoogle(w http.ResponseWriter, r *http.Request, t tena
 	s.noticeAt(w, r, "/settings", fmt.Sprintf("Calendar up to date — %d events checked.", res.Fetched))
 }
 
-// handleDisconnectGoogle removes the connection and everything it brought in.
+// handleDisconnectGoogle removes the local connection and asks Google to
+// revoke the refresh token. Local deletion is authoritative for this product:
+// even if Google's revoke endpoint is temporarily unavailable, Exec Assist no
+// longer has a usable credential after this handler returns.
 func (s *Server) handleDisconnectGoogle(w http.ResponseWriter, r *http.Request, t tenant.Tenant) {
 	stores, err := s.tenants.Stores(t.ID)
 	if err != nil {
 		s.fail(w, "open your data", err)
 		return
 	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	revokeErr := google.RevokeConnection(ctx, s.google, stores.Ledger(), s.secrets)
+
 	if err := stores.Ledger().DeleteConnection(google.Provider); err != nil {
 		s.fail(w, "disconnect the calendar", err)
+		return
+	}
+
+	if revokeErr != nil && !errors.Is(revokeErr, ledger.ErrNoConnection) {
+		log.Printf("[google] revoke during disconnect for %s: %v", t.ID, revokeErr)
+		s.noticeAt(w, r, "/settings", "Calendar disconnected from Exec Assist. Google could not confirm remote access was revoked; if needed, remove Exec Assist from your Google Account's connected apps.")
 		return
 	}
 	s.noticeAt(w, r, "/settings", "Calendar disconnected and its appointments removed.")
