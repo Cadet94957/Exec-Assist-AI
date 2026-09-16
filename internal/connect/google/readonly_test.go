@@ -19,13 +19,19 @@ import (
 // call with it. A customer's calendar is theirs, and the cheapest way to never
 // damage one is to hold no code that could.
 //
+// OAuth token revocation is intentionally implemented in this package too, but
+// it changes the authorization grant, not a calendar resource. It is therefore
+// excluded from this calendar-client guard below. If a future change adds a
+// calendar write, this test should fail and that change should be deliberate.
+//
 // It reads the package's own syntax tree rather than grepping, so prose in a
 // comment — the scope comment uses the word "delete" — cannot fail the build,
 // and a write verb cannot hide inside one either.
 func TestClientIsReadOnly(t *testing.T) {
 	// The HTTP methods that can change state, as both the net/http constant
 	// name and the bare string someone might pass to http.NewRequest. GET and
-	// HEAD are deliberately absent: they are the only two this package may use.
+	// HEAD are deliberately absent: they are the only two the Calendar API
+	// client may use.
 	banned := map[string]string{
 		"MethodPost":   "http.MethodPost",
 		"MethodPut":    "http.MethodPut",
@@ -36,7 +42,7 @@ func TestClientIsReadOnly(t *testing.T) {
 		"POST": true, "PUT": true, "PATCH": true, "DELETE": true,
 	}
 
-	const guidance = "\nThis package must only read. If a future phase genuinely needs to write to a " +
+	const guidance = "\nThis package must only read the calendar. If a future phase genuinely needs to write to a " +
 		"calendar, that is a deliberate decision with its own OAuth scope, its own consent " +
 		"screen and its own review — so change this test on purpose, not by accident."
 
@@ -51,6 +57,12 @@ func TestClientIsReadOnly(t *testing.T) {
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		// revoke.go talks to Google's OAuth revocation endpoint, not the
+		// Calendar API. It is intentionally allowed to POST there so disconnect
+		// can revoke the refresh token as well as deleting the local credential.
+		if name == "revoke.go" {
 			continue
 		}
 		file, err := parser.ParseFile(fset, name, nil, 0)
