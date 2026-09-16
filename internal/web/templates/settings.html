@@ -11,27 +11,42 @@
     <h2 id="cal-h">Calendar</h2>
     <div class="card">
       {{if .GoogleConnected}}
-        <div class="calbar">
-          <span class="dot on" aria-hidden="true"></span>
-          <span>Connected{{if .Connection.Account}} &middot; {{.Connection.Account}}{{end}}</span>
-          <span class="muted">synced {{ago .Connection.LastSync}}</span>
-          <span class="calactions">
-            <form method="post" action="/connect/google/sync"><button class="link">Sync now</button></form>
-            <form method="post" action="/connect/google/disconnect"
-                  onsubmit="return confirm('Disconnect Google Calendar? The appointments it brought in will be removed.')">
-              <button class="link quiet">Disconnect</button>
-            </form>
-          </span>
-        </div>
         {{if .Connection.LastError.Valid}}
-          <p class="syncerr">The last sync had trouble. It will keep retrying.</p>
+          <div class="calbar">
+            <span class="dot" aria-hidden="true"></span>
+            <span><strong>Calendar needs attention</strong>{{if .Connection.Account}} &middot; {{.Connection.Account}}{{end}}</span>
+            <span class="calactions">
+              <form method="post" action="/connect/google/sync"><button class="link">Try sync again</button></form>
+              <a class="link" href="/connect/google">Reconnect</a>
+              <form method="post" action="/connect/google/disconnect"
+                    onsubmit="return confirm('Disconnect Google Calendar? The appointments it brought in will be removed.')">
+                <button class="link quiet">Disconnect</button>
+              </form>
+            </span>
+          </div>
+          <p class="syncerr">We couldn't complete the last calendar sync. Your existing schedule is still here, but it may be out of date. Try syncing again; if Google asks you to sign in, reconnect the calendar.</p>
+          <p class="muted small">Last successful sync: {{ago .Connection.LastSync}}</p>
+        {{else}}
+          <div class="calbar">
+            <span class="dot on" aria-hidden="true"></span>
+            <span><strong>Calendar connected</strong>{{if .Connection.Account}} &middot; {{.Connection.Account}}{{end}}</span>
+            <span class="muted">last synced {{ago .Connection.LastSync}}</span>
+            <span class="calactions">
+              <form method="post" action="/connect/google/sync"><button class="link">Sync now</button></form>
+              <form method="post" action="/connect/google/disconnect"
+                    onsubmit="return confirm('Disconnect Google Calendar? The appointments it brought in will be removed.')">
+                <button class="link quiet">Disconnect</button>
+              </form>
+            </span>
+          </div>
+          <p class="muted small">Exec Assist reads your primary Google Calendar and refreshes it every 10 minutes. It cannot create, edit, or delete calendar events.</p>
         {{end}}
-        <p class="muted small">Your calendar is re-read every 10 minutes.</p>
       {{else if .GoogleReady}}
-        <p style="margin:0 0 12px">Connect Google Calendar and today's jobs appear here automatically.</p>
+        <p style="margin:0 0 6px"><strong>Connect your calendar</strong></p>
+        <p class="muted small" style="margin:0 0 14px">Exec Assist reads your primary Google Calendar so it can prepare your day and catch scheduling problems. It cannot change your calendar.</p>
         <a class="btnlink" href="/connect/google">Connect Google Calendar</a>
       {{else}}
-        <p class="muted" style="margin:0">Calendar connection isn't configured on this server yet.</p>
+        <p class="muted" style="margin:0">Calendar connection isn't available yet. Please contact support.</p>
       {{end}}
     </div>
   </section>
