@@ -234,7 +234,7 @@ func convert(w wireEvent) (Event, bool) {
 	}
 	end, _, _ := parseEventTime(w.End)
 
-	title := strings.TrimSpace(w.Summary)
+	title := sanitise(w.Summary, 200)
 	if title == "" {
 		title = "(no title)"
 	}
@@ -242,11 +242,37 @@ func convert(w wireEvent) (Event, bool) {
 	return Event{
 		ID:       w.ID,
 		Title:    title,
-		Location: strings.TrimSpace(w.Location),
+		Location: sanitise(w.Location, 200),
 		Start:    start,
 		End:      end,
 		AllDay:   allDay,
 	}, true
+}
+
+// sanitise cleans third-party text before it enters the system.
+//
+// A calendar invite is something anyone with the address can create, so its
+// title and location are attacker-controlled. Two things matter here. Newlines
+// and control characters are removed because the prompts lay data out in
+// lines, and a title containing a newline could otherwise forge what looks
+// like a new instruction section. And the length is bounded, because an
+// enormous title is both a cost attack and a way to push the real instructions
+// out of attention.
+func sanitise(s string, max int) string {
+	s = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > max {
+		s = strings.TrimSpace(s[:max]) + "…"
+	}
+	return s
 }
 
 func parseEventTime(t wireEventTime) (parsed time.Time, allDay bool, ok bool) {

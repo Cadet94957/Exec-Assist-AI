@@ -271,14 +271,22 @@ func (m *Manager) Stores(id string) (*Stores, error) {
 		return s, nil
 	}
 
-	dir := m.Dir(id)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("tenant: create dir %s: %w", dir, err)
+	// Establish that this is a real tenant with a well-formed id *before*
+	// touching the filesystem. Ids reach here from a signed cookie today, so
+	// this is not currently reachable — but a path built from a caller-supplied
+	// string is the exact shape of bug that turns critical the moment some
+	// future handler passes one through.
+	if !idPattern.MatchString(id) {
+		return nil, ErrNotFound
 	}
-
 	t, err := m.get(id)
 	if err != nil {
 		return nil, err
+	}
+
+	dir := m.Dir(id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("tenant: create dir %s: %w", dir, err)
 	}
 
 	led, err := ledger.Open(filepath.Join(dir, "ledger.db"))

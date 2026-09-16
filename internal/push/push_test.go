@@ -39,7 +39,7 @@ func TestSendReachesThePushService(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := push.NewSender(keys(t)).Send(context.Background(), subscription(srv.URL),
+	err := push.NewTestSender(keys(t)).Send(context.Background(), subscription(srv.URL),
 		push.Message{Title: "Your brief", Body: "3 stops today.", URL: "/"})
 	if err != nil {
 		t.Fatalf("send: %v", err)
@@ -59,7 +59,7 @@ func TestGoneSubscriptionIsIdentifiable(t *testing.T) {
 			w.WriteHeader(code)
 		}))
 
-		err := push.NewSender(keys(t)).Send(context.Background(), subscription(srv.URL),
+		err := push.NewTestSender(keys(t)).Send(context.Background(), subscription(srv.URL),
 			push.Message{Title: "x", Body: "y"})
 		srv.Close()
 
@@ -83,7 +83,42 @@ func TestIncompleteSubscriptionIsRejected(t *testing.T) {
 	if bare.Valid() {
 		t.Error("a subscription with no keys reported itself valid")
 	}
-	if err := push.NewSender(keys(t)).Send(context.Background(), bare, push.Message{}); err == nil {
+	if err := push.NewTestSender(keys(t)).Send(context.Background(), bare, push.Message{}); err == nil {
 		t.Error("an incomplete subscription was accepted")
+	}
+}
+
+// The endpoint comes from the browser, so an authenticated tenant controls it
+// entirely. Without this check they could point it at an internal address and
+// have the server POST there every morning.
+func TestEndpointsMustBePublicHTTPS(t *testing.T) {
+	rejected := []string{
+		"http://push.example.com/x",      // not https
+		"https://127.0.0.1/x",            // loopback
+		"https://localhost/x",            // loopback by name
+		"https://10.0.0.5/x",             // private
+		"https://192.168.1.1/x",          // private
+		"https://169.254.169.254/latest", // cloud metadata
+		"https://100.64.0.1/x",           // carrier-grade NAT
+		"https://[::1]/x",                // loopback v6
+		"ftp://example.com/x",
+		"",
+	}
+	for _, endpoint := range rejected {
+		if err := push.ValidEndpoint(endpoint); err == nil {
+			t.Errorf("%q was accepted as a push endpoint", endpoint)
+		}
+	}
+
+	if err := push.ValidEndpoint("https://updates.push.services.mozilla.com/wpush/v2/abc"); err != nil {
+		t.Errorf("a real push service endpoint was rejected: %v", err)
+	}
+}
+
+func TestSenderRefusesUnsafeEndpoints(t *testing.T) {
+	sub := subscription("https://169.254.169.254/latest/meta-data")
+	err := push.NewSender(keys(t)).Send(context.Background(), sub, push.Message{Title: "x"})
+	if !errors.Is(err, push.ErrUnsafeEndpoint) {
+		t.Errorf("got %v, want ErrUnsafeEndpoint", err)
 	}
 }

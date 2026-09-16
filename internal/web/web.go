@@ -20,6 +20,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,13 @@ var templateFS embed.FS
 var staticFS embed.FS
 
 const sessionCookie = "eaa_session"
+
+// sessionLifetime bounds how long a signed session value stays valid.
+//
+// The cookie's MaxAge only tells a browser when to stop sending it, which is
+// no protection at all if the value is ever captured. Baking the issue time
+// into what is signed means a stolen session expires on its own.
+const sessionLifetime = 30 * 24 * time.Hour
 
 // Server holds everything the handlers need.
 type Server struct {
@@ -283,7 +291,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		Secure:   s.secure,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int((30 * 24 * time.Hour).Seconds()),
+		MaxAge:   int(sessionLifetime.Seconds()),
 	})
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -649,23 +657,41 @@ func (s *Server) currentTenant(r *http.Request) (tenant.Tenant, bool) {
 }
 
 func (s *Server) sign(id string) string {
+	issued := strconv.FormatInt(time.Now().Unix(), 10)
+	payload := id + "." + issued
 	mac := hmac.New(sha256.New, s.secret)
-	mac.Write([]byte(id))
-	return id + "." + hex.EncodeToString(mac.Sum(nil))
+	mac.Write([]byte(payload))
+	return payload + "." + hex.EncodeToString(mac.Sum(nil))
 }
 
 func (s *Server) verify(value string) (string, bool) {
-	id, sig, found := strings.Cut(value, ".")
-	if !found || id == "" {
+	parts := strings.Split(value, ".")
+	if len(parts) != 3 {
 		return "", false
 	}
+	id, issuedStr, sig := parts[0], parts[1], parts[2]
+	if id == "" {
+		return "", false
+	}
+
 	want, err := hex.DecodeString(sig)
 	if err != nil {
 		return "", false
 	}
 	mac := hmac.New(sha256.New, s.secret)
-	mac.Write([]byte(id))
+	mac.Write([]byte(id + "." + issuedStr))
 	if !hmac.Equal(want, mac.Sum(nil)) {
+		return "", false
+	}
+
+	issued, err := strconv.ParseInt(issuedStr, 10, 64)
+	if err != nil {
+		return "", false
+	}
+	// A session from the future is a clock problem or a forgery attempt;
+	// either way it is not something to honour.
+	age := time.Since(time.Unix(issued, 0))
+	if age < 0 || age > sessionLifetime {
 		return "", false
 	}
 	return id, true

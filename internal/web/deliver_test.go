@@ -79,7 +79,7 @@ func TestDeliverSendsAndRecords(t *testing.T) {
 		t.Fatalf("save brief: %v", err)
 	}
 
-	n, err := web.Deliver(context.Background(), push.NewSender(vapid(t)), s,
+	n, err := web.Deliver(context.Background(), push.NewTestSender(vapid(t)), s,
 		brief.Brief{Headline: "3 stops today."}, day)
 	if err != nil {
 		t.Fatalf("deliver: %v", err)
@@ -109,7 +109,7 @@ func TestDeliverForgetsDeadSubscriptions(t *testing.T) {
 	subscribe(t, s, srv.URL)
 
 	day := s.Tenant().StartOfDay(time.Now())
-	n, err := web.Deliver(context.Background(), push.NewSender(vapid(t)), s,
+	n, err := web.Deliver(context.Background(), push.NewTestSender(vapid(t)), s,
 		brief.Brief{Headline: "x"}, day)
 	if err != nil {
 		t.Fatalf("deliver: %v", err)
@@ -140,7 +140,7 @@ func TestDeliveredPayloadIsUsable(t *testing.T) {
 	subscribe(t, s, srv.URL)
 
 	day := s.Tenant().StartOfDay(time.Now())
-	if _, err := web.Deliver(context.Background(), push.NewSender(vapid(t)), s,
+	if _, err := web.Deliver(context.Background(), push.NewTestSender(vapid(t)), s,
 		brief.Brief{Headline: "3 stops — Marriott is tight."}, day); err != nil {
 		t.Fatalf("deliver: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestDeliveredPayloadIsUsable(t *testing.T) {
 // tenants will not have installed the app.
 func TestDeliverWithNoSubscriptions(t *testing.T) {
 	s := tenantStore(t)
-	n, err := web.Deliver(context.Background(), push.NewSender(vapid(t)), s,
+	n, err := web.Deliver(context.Background(), push.NewTestSender(vapid(t)), s,
 		brief.Brief{Headline: "x"}, time.Now())
 	if err != nil {
 		t.Fatalf("deliver: %v", err)

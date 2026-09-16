@@ -1,11 +1,16 @@
 package web
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Cadet94957/Exec-Assist-AI/internal/connect/google"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/push"
@@ -173,6 +178,46 @@ func TestSettingsRequiresASession(t *testing.T) {
 		}
 		if loc := resp.Header.Get("Location"); loc != "/login" {
 			t.Errorf("%s redirected to %q, want /login", path, loc)
+		}
+	}
+}
+
+// A cookie's MaxAge only tells a browser when to stop sending it. If the
+// signed value itself never expires, a captured session is valid forever.
+func TestSessionValueExpires(t *testing.T) {
+	s := testServer()
+
+	fresh := s.sign("dave-glass")
+	if id, ok := s.verify(fresh); !ok || id != "dave-glass" {
+		t.Fatalf("a fresh session did not verify: %q %v", id, ok)
+	}
+
+	// Forge a correctly-signed session issued long ago, the way a captured
+	// cookie would look after sitting in a log for a few months.
+	old := time.Now().Add(-40 * 24 * time.Hour).Unix()
+	payload := "dave-glass." + strconv.FormatInt(old, 10)
+	mac := hmac.New(sha256.New, s.secret)
+	mac.Write([]byte(payload))
+	stale := payload + "." + hex.EncodeToString(mac.Sum(nil))
+
+	if _, ok := s.verify(stale); ok {
+		t.Error("a session issued 40 days ago still verified")
+	}
+}
+
+func TestSessionRejectsTampering(t *testing.T) {
+	s := testServer()
+	valid := s.sign("dave-glass")
+
+	for _, bad := range []string{
+		"",
+		"dave-glass",
+		"dave-glass.123",
+		"kim-glazing." + valid[len("dave-glass."):], // swapped tenant, same signature
+		valid + "x",
+	} {
+		if _, ok := s.verify(bad); ok {
+			t.Errorf("malformed session %q verified", bad)
 		}
 	}
 }
