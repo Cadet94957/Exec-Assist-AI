@@ -28,7 +28,11 @@ const oauthStateTTL = 15 * time.Minute
 // handleConnectGoogle sends the contractor to Google's consent screen.
 func (s *Server) handleConnectGoogle(w http.ResponseWriter, r *http.Request, t tenant.Tenant) {
 	if !s.google.Configured() {
-		s.notice(w, r, "Calendar connection isn't set up on this server yet.")
+		s.noticeAt(w, r, "/settings", "Calendar connection isn't available yet. Please contact support.")
+		return
+	}
+	if s.secrets == nil {
+		s.noticeAt(w, r, "/settings", "Calendar connection isn't available yet. Please contact support.")
 		return
 	}
 	http.Redirect(w, r, s.google.AuthURL(s.signState(t.ID)), http.StatusSeeOther)
@@ -39,11 +43,11 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request, t 
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
 		// access_denied is someone pressing Cancel, not a fault.
 		if errParam == "access_denied" {
-			s.notice(w, r, "Calendar not connected — you cancelled at the Google screen.")
+			s.noticeAt(w, r, "/settings", "Calendar not connected — no changes were made.")
 			return
 		}
 		log.Printf("[google] consent returned %s for %s", errParam, t.ID)
-		s.notice(w, r, "Google refused the connection. Nothing has changed.")
+		s.noticeAt(w, r, "/settings", "Google couldn't approve the connection. Please try again.")
 		return
 	}
 
@@ -51,13 +55,13 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request, t 
 	// session is making this request — otherwise someone else's calendar could
 	// be attached to this account.
 	if !s.verifyState(r.URL.Query().Get("state"), t.ID) {
-		s.notice(w, r, "That connection link expired. Please try connecting again.")
+		s.noticeAt(w, r, "/settings", "That connection link expired. Please start again.")
 		return
 	}
 
 	code := r.URL.Query().Get("code")
 	if code == "" {
-		s.notice(w, r, "Google didn't send an authorization code. Please try again.")
+		s.noticeAt(w, r, "/settings", "Google didn't send an authorization code. Please try again.")
 		return
 	}
 
@@ -67,7 +71,7 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request, t 
 	tok, err := s.google.Exchange(ctx, code)
 	if err != nil {
 		log.Printf("[google] exchange for %s: %v", t.ID, err)
-		s.notice(w, r, "Couldn't complete the connection with Google. Please try again.")
+		s.noticeAt(w, r, "/settings", "Couldn't complete the connection with Google. Please try again.")
 		return
 	}
 
@@ -79,7 +83,7 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request, t 
 
 	if s.secrets == nil {
 		log.Printf("[google] refusing to store a token for %s: TOKEN_KEY is not set", t.ID)
-		s.notice(w, r, "This server can't store calendar credentials safely yet. Nothing was saved.")
+		s.noticeAt(w, r, "/settings", "Calendar connection isn't available yet. Please contact support.")
 		return
 	}
 
@@ -89,15 +93,15 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request, t 
 		return
 	}
 
-	// Sync immediately so the dashboard is populated when they land back on
-	// it. An empty screen right after connecting reads as a failure.
+	// Sync immediately so the settings page is populated when they land back
+	// on it. An empty screen right after connecting reads as a failure.
 	if _, err := google.Sync(ctx, s.google, stores.Ledger(), s.secrets, time.Now()); err != nil {
 		log.Printf("[google] first sync for %s: %v", t.ID, err)
-		s.notice(w, r, "Calendar connected. The first sync had trouble — it'll retry shortly.")
+		s.noticeAt(w, r, "/settings", "Calendar connected, but the first sync needs attention. We'll keep retrying.")
 		return
 	}
 
-	s.notice(w, r, "Calendar connected.")
+	s.noticeAt(w, r, "/settings", "Calendar connected and up to date.")
 }
 
 // handleSyncGoogle runs a sync on demand.
@@ -108,20 +112,25 @@ func (s *Server) handleSyncGoogle(w http.ResponseWriter, r *http.Request, t tena
 		return
 	}
 
+	if s.secrets == nil {
+		s.noticeAt(w, r, "/settings", "Calendar connection isn't available yet. Please contact support.")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
 	res, err := google.Sync(ctx, s.google, stores.Ledger(), s.secrets, time.Now())
 	if err != nil {
 		if errors.Is(err, ledger.ErrNoConnection) {
-			s.notice(w, r, "No calendar is connected yet.")
+			s.noticeAt(w, r, "/settings", "No calendar is connected yet.")
 			return
 		}
 		log.Printf("[google] manual sync for %s: %v", t.ID, err)
-		s.notice(w, r, "Couldn't reach Google just now. Your existing schedule is unchanged.")
+		s.noticeAt(w, r, "/settings", "Couldn't update your calendar just now. Your existing schedule is unchanged.")
 		return
 	}
-	s.notice(w, r, fmt.Sprintf("Calendar up to date — %d events.", res.Fetched))
+	s.noticeAt(w, r, "/settings", fmt.Sprintf("Calendar up to date — %d events checked.", res.Fetched))
 }
 
 // handleDisconnectGoogle removes the connection and everything it brought in.
@@ -135,7 +144,7 @@ func (s *Server) handleDisconnectGoogle(w http.ResponseWriter, r *http.Request, 
 		s.fail(w, "disconnect the calendar", err)
 		return
 	}
-	s.notice(w, r, "Calendar disconnected and its appointments removed.")
+	s.noticeAt(w, r, "/settings", "Calendar disconnected and its appointments removed.")
 }
 
 // --- OAuth state ---
@@ -184,9 +193,9 @@ func (s *Server) verifyState(state, tenantID string) bool {
 }
 
 // emailFromToken reads the account address from the id_token Google returns
-// alongside the access token. The token came straight from Google's token
-// endpoint over TLS in a direct server-to-server exchange, so its claims can be
-// read without verifying the signature. Best effort — it is only a label.
+// alongside the access token. The value is display metadata only; the OAuth
+// state and authenticated tenant session, not this label, determine which
+// tenant receives the connection.
 func emailFromToken(tok interface{ Extra(string) any }) string {
 	raw, _ := tok.Extra("id_token").(string)
 	parts := strings.Split(raw, ".")
