@@ -46,6 +46,11 @@ func main() {
 				log.Fatalf("create-tenant: %v", err)
 			}
 			return
+		case "quickstart":
+			if err := quickstart(os.Args[2:]); err != nil {
+				log.Fatalf("quickstart: %v", err)
+			}
+			return
 		case "seed-demo":
 			if err := seedDemo(os.Args[2:]); err != nil {
 				log.Fatalf("seed-demo: %v", err)
@@ -671,6 +676,136 @@ func startEmbedShim() (string, func(), error) {
 	}, nil
 }
 
+// quickstart is the one command a person who downloaded a binary should need.
+//
+// The normal path — create-tenant, then seed-demo, then run, each with flags —
+// is three commands and a key you have to copy out of the first one's output
+// before it scrolls away. That is fine for an engineer and a wall for everyone
+// else. This does the same work, in order, and prints the URL and the key
+// together at the end where they are actually useful.
+//
+// It is deliberately safe to run twice: an existing account is reused and not
+// re-seeded, so nobody ends up with six copies of the demo day.
+func quickstart(args []string) error {
+	fs := flag.NewFlagSet("quickstart", flag.ExitOnError)
+	// Three characters is the floor the tenant id validator enforces, so a
+	// friendlier-looking "me" fails before anything else happens.
+	id := fs.String("id", "my-business", "account id")
+	name := fs.String("name", "My Business", "business name")
+	tz := fs.String("tz", "", "IANA timezone, e.g. America/Los_Angeles (default: this computer's)")
+	dataDir := fs.String("data", envOr("DATA_DIR", "./data"), "where to keep your data")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	zone, guessed := localZone(*tz)
+
+	// serve() reads DATA_DIR from the environment, so -data has to reach it
+	// that way or the account gets created in one directory and served from
+	// another — which presents as a valid key being rejected at sign-in.
+	os.Setenv("DATA_DIR", *dataDir)
+
+	key, created, err := ensureTenant(*dataDir, *id, *name, zone)
+	if err != nil {
+		return err
+	}
+
+	// Sign-in sets a Secure cookie by default, which a browser silently
+	// discards over plain HTTP — the login form just redisplays itself with no
+	// error. quickstart is local HTTP by definition, so opt out here rather
+	// than making someone diagnose that.
+	if os.Getenv("INSECURE_COOKIES") == "" {
+		os.Setenv("INSECURE_COOKIES", "1")
+	}
+	// Without this, sessions are invalidated on every restart.
+	if os.Getenv("SESSION_SECRET") == "" {
+		secret := make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			return fmt.Errorf("generate session secret: %w", err)
+		}
+		os.Setenv("SESSION_SECRET", hex.EncodeToString(secret))
+	}
+
+	url := "http://localhost:" + envOr("PORT", "8080")
+
+	fmt.Println()
+	fmt.Println("  Your assistant is ready.")
+	fmt.Println()
+	fmt.Printf("    Open this:  %s\n", url)
+	// The sign-in form asks for both, so printing only the key sends people
+	// back to the terminal to guess the other half.
+	fmt.Printf("    Account:    %s\n", *id)
+	if created {
+		fmt.Printf("    Key:        %s\n", key)
+		fmt.Println()
+		fmt.Println("  Copy that key somewhere safe now. Only its hash is stored,")
+		fmt.Println("  so it cannot be shown again. To start over, delete the")
+		fmt.Printf("  %q folder and run this again.\n", *dataDir)
+	} else {
+		fmt.Println("    Key:        the one you saved the first time you ran this")
+		fmt.Printf("                (to start over, delete the %q folder)\n", *dataDir)
+	}
+	fmt.Println()
+	fmt.Printf("  Timezone:   %s", zone)
+	if guessed {
+		fmt.Print("  — guessed from this computer; set it with -tz if wrong")
+	}
+	fmt.Println()
+	if os.Getenv("ANTHROPIC_API_KEY") == "" {
+		fmt.Println("  Brief:      off. Set ANTHROPIC_API_KEY to turn on the morning brief.")
+	}
+	fmt.Println()
+	fmt.Println("  Press Ctrl+C to stop.")
+	fmt.Println()
+
+	return serve()
+}
+
+// localZone reports the timezone to use and whether it had to be guessed.
+//
+// Every "what does today look like" calculation keys off this, so a wrong guess
+// does not fail loudly — it quietly shows the wrong day. Hence the caller says
+// out loud which one it picked.
+func localZone(explicit string) (name string, guessed bool) {
+	if explicit != "" {
+		return explicit, false
+	}
+	// time.Local resolves to an IANA name on a normally configured machine.
+	// In a bare container it can come back as "Local" or "UTC", neither of
+	// which is a real guess worth presenting as one.
+	if n := time.Local.String(); n != "" && n != "Local" && n != "UTC" {
+		return n, true
+	}
+	return "UTC", true
+}
+
+// ensureTenant creates and seeds the account on first run, and does nothing on
+// every run after that. It returns the access key only when it created one.
+func ensureTenant(dataDir, id, name, zone string) (key string, created bool, err error) {
+	tenants, err := tenant.NewManager(dataDir)
+	if err != nil {
+		return "", false, err
+	}
+	defer tenants.Close()
+
+	if _, err := tenants.Get(id); err == nil {
+		return "", false, nil
+	}
+
+	t, key, err := tenants.Create(id, name, "glazier", zone, "")
+	if err != nil {
+		return "", false, fmt.Errorf("create your account: %w", err)
+	}
+	stores, err := tenants.Stores(t.ID)
+	if err != nil {
+		return "", false, err
+	}
+	if err := seedTenant(t, stores); err != nil {
+		return "", false, fmt.Errorf("seed the demo day: %w", err)
+	}
+	return key, true, nil
+}
+
 func createTenant(args []string) error {
 	fs := flag.NewFlagSet("create-tenant", flag.ExitOnError)
 	id := fs.String("id", "", "short account id, e.g. dave-glass (required)")
@@ -735,14 +870,26 @@ func seedDemo(args []string) error {
 	if err != nil {
 		return err
 	}
+	return seedTenant(t, stores)
+}
 
+// seedTenant writes the demo day and the learned facts behind it.
+//
+// Split out of seedDemo so quickstart can seed without going through flag
+// parsing. One copy of the demo data, not two — the moment there are two, they
+// drift, and the screenshots stop matching what a new person actually sees.
+func seedTenant(t tenant.Tenant, stores *tenant.Stores) error {
 	// A day's stops, in deliberately scrambled order — the ledger sorts them.
 	day := t.StartOfDay(time.Now())
 	for _, a := range []struct {
 		id, title, where string
 		hour             int
 	}{
-		{"demo-2", "Marriott 4th St — lobby panel measure", "1200 4th St", 11},
+		// "Downtown" is load-bearing, not scenery: the standing rule below is
+		// matched to a stop by the words in it, so without this the 45-minute
+		// parking buffer never attaches and the demo quietly fails to show the
+		// one thing this product is for.
+		{"demo-2", "Marriott 4th St — lobby panel measure", "1200 4th St, Downtown", 11},
 		{"demo-1", "Harborview — storefront reglaze", "88 Harbor Way", 8},
 		{"demo-3", "Ferguson residence — shower door fit", "41 Cedar Ln", 14},
 	} {

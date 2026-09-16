@@ -34,6 +34,81 @@ Each contractor gets their own pair of SQLite files. Isolation is structural, no
 `WHERE tenant_id = ?` that someone can forget — and "export everything you know about my
 business" is a file copy.
 
+## Trying it out (no toolchain needed)
+
+Download a build and run one command. Nothing to install, no Go, no compiler.
+
+1. Go to the repo's **Actions** tab → **Build downloads** → **Run workflow**.
+2. When it finishes, the binaries are at the bottom of the run page under *Artifacts*.
+   Download the one for your computer:
+
+   | You have | Download |
+   |---|---|
+   | Mac, M1/M2/M3/M4 | `exec-assist-macos-apple-silicon` |
+   | Mac, Intel | `exec-assist-macos-intel` |
+   | Windows | `exec-assist-windows-amd64` |
+   | Linux | `exec-assist-linux-amd64` |
+
+3. Unzip it, then:
+
+```sh
+chmod +x ./exec-assist-*                       # macOS and Linux only
+./exec-assist-macos-apple-silicon quickstart
+```
+
+It prints an address, an account name and a key. Open the address, sign in, and you are
+looking at a demo glazier's day: three stops in order, the Harborview gate code attached
+to the right one, and the 45-minute downtown parking buffer applied to the Marriott
+measure. That last one is the product in miniature — a standing rule, matched to the stop
+it affects, without anyone asking.
+
+Run it again later and it picks up the same account rather than starting over. To wipe it,
+delete the `data` folder it created next to the binary.
+
+Set your timezone if the guess is wrong — everything about "today" depends on it:
+
+```sh
+./exec-assist-... quickstart -tz America/Los_Angeles
+```
+
+### The morning brief needs a key
+
+Everything above works with no accounts and no API keys. The brief does not — it is the
+one feature that calls Claude, and without a key the button says so plainly:
+
+```sh
+ANTHROPIC_API_KEY=sk-ant-... ./exec-assist-... quickstart
+```
+
+A brief costs a fraction of a cent. Set a spend limit on the key first anyway — see
+[Cap the spend](#cap-the-spend).
+
+### The two warnings you will see
+
+These builds are unsigned. Signing costs money and buys nothing while you are the only
+person installing them, so both operating systems will object once, and both are one step.
+
+**macOS** quarantines anything downloaded from the internet, and will refuse to run the
+binary — usually with a dialog about an unidentified developer. Clear it:
+
+```sh
+xattr -dr com.apple.quarantine ./exec-assist-macos-apple-silicon
+```
+
+**Windows** SmartScreen warns about unsigned executables. Running it from PowerShell or
+Terminal generally avoids the prompt; if you double-click it and Windows blocks it, choose
+*More info* → *Run anyway*.
+
+Neither is a sign anything is wrong. They are what unsigned means. If you ever hand this
+to someone you are not on the phone with, that is the point to buy a certificate — see
+[Where this is up to](#where-this-is-up-to).
+
+### Phone notifications need a deploy
+
+The 6am brief cannot reach your phone from a laptop, because your phone needs a real HTTPS
+address to subscribe to. Local is for looking at the product; [Deploying](#deploying) is
+for living with it.
+
 ## Running it locally
 
 You need Go 1.24.13 or newer and a C compiler (`gcc`). Both sqlite-vec and go-sqlite3 are
@@ -41,6 +116,12 @@ cgo, so `CGO_ENABLED=0` will not build.
 
 ```sh
 make check                                        # format, vet, tests
+make build && ./bin/server quickstart             # one command, as above
+```
+
+Or the long way, when you want control over the account:
+
+```sh
 make tenant ID=dave-glass NAME="Dave's Glass" TZ=America/Los_Angeles
 ./bin/server seed-demo -id dave-glass             # a plausible day, for looking at
 make run                                          # http://localhost:8080

@@ -1,0 +1,24 @@
+# Runs what `make check` runs, so a commit that does not build cannot sit on a
+# branch looking fine.
+name: Check
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # gofmt, go vet and the full test suite. The suite is offline by design —
+      # the brief eval is behind a build tag, so nothing here spends money or
+      # needs a key.
+      - run: make check

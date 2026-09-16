@@ -1,0 +1,99 @@
+# Builds the binaries a non-engineer downloads and runs.
+#
+# Every job builds on its own operating system rather than cross-compiling.
+# That is not a stylistic choice: sqlite-vec and go-sqlite3 are both cgo, so a
+# cross-build needs a full C toolchain for the target, and that is the part of
+# workflows like this that rots silently. Native runners cost nothing extra and
+# the compiler is already there.
+name: Build downloads
+
+on:
+  # The button. Actions -> Build downloads -> Run workflow, then the binaries
+  # appear at the bottom of the run page. This is the one to use day to day.
+  workflow_dispatch:
+  # A real release, for when you want a permanent link to send someone.
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # One platform failing should not hide whether the others work.
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            label: linux-amd64
+          - runner: macos-latest
+            label: macos-apple-silicon
+          - runner: macos-13
+            label: macos-intel
+          - runner: windows-latest
+            label: windows-amd64
+            ext: .exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Tracks the go directive in go.mod so this never drifts from what
+          # the code actually requires.
+          go-version-file: go.mod
+          cache: true
+
+      # Printed on every run so that when a build does break, the log already
+      # answers "was there a C compiler?" instead of needing a second run.
+      - name: Show the C toolchain
+        run: gcc --version
+        shell: bash
+
+      - name: Build
+        env:
+          CGO_ENABLED: "1"
+        run: go build -trimpath -ldflags="-s -w" -o "exec-assist-${{ matrix.label }}${{ matrix.ext }}" ./cmd/server
+        shell: bash
+
+      # Proves the binary runs on this platform at all. `quickstart -h` exits 0
+      # without touching the filesystem or opening a port, so it is a real
+      # smoke test rather than a compile check.
+      - name: Smoke test
+        run: ./exec-assist-${{ matrix.label }}${{ matrix.ext }} quickstart -h
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exec-assist-${{ matrix.label }}
+          path: exec-assist-${{ matrix.label }}${{ matrix.ext }}
+          if-no-files-found: error
+
+  release:
+    name: Attach to release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: downloads
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: downloads/*
+          generate_release_notes: true
+          body: |
+            Download the file for your computer, then see the README for the
+            one command to run it.
+
+            These builds are unsigned, so the first run needs one extra step:
+
+            - **macOS** — `xattr -dr com.apple.quarantine ./exec-assist-*`
+            - **Windows** — if double-clicking is blocked, *More info* then *Run anyway*
+
+            On macOS and Linux you also need `chmod +x ./exec-assist-*` once.
