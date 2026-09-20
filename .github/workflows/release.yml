@@ -27,15 +27,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
-            label: linux-amd64
+          # Named for the person downloading them, not for a build target.
+          # "Which one is darwin-arm64" is not a question to make someone
+          # answer about their own laptop.
           - runner: macos-latest
-            label: macos-apple-silicon
+            label: ExecAssist-Mac-AppleSilicon
+            platform: mac
+            note: "Macs with Apple silicon (M1, M2, M3, M4)"
           - runner: macos-13
-            label: macos-intel
+            label: ExecAssist-Mac-Intel
+            platform: mac
+            note: "Older Macs with Intel processors"
           - runner: windows-latest
-            label: windows-amd64
+            label: ExecAssist-Windows
+            platform: windows
             ext: .exe
+            note: "Windows"
+          - runner: ubuntu-latest
+            label: ExecAssist-Linux
+            platform: linux
+            note: "Linux"
 
     steps:
       - uses: actions/checkout@v4
@@ -56,20 +67,90 @@ jobs:
       - name: Build
         env:
           CGO_ENABLED: "1"
-        run: go build -trimpath -ldflags="-s -w" -o "exec-assist-${{ matrix.label }}${{ matrix.ext }}" ./cmd/server
+        run: go build -trimpath -ldflags="-s -w" -o "${{ matrix.label }}${{ matrix.ext }}" ./cmd/server
         shell: bash
 
-      # Proves the binary runs on this platform at all. `quickstart -h` exits 0
-      # without touching the filesystem or opening a port, so it is a real
-      # smoke test rather than a compile check.
+      # Proves the binary runs on this platform at all. `-h` exits 0 without
+      # touching the filesystem or opening a port, so it is a real smoke test
+      # rather than a compile check.
       - name: Smoke test
-        run: ./exec-assist-${{ matrix.label }}${{ matrix.ext }} quickstart -h
+        run: ./${{ matrix.label }}${{ matrix.ext }} -h
         shell: bash
+
+      # The instructions travel with the download. A README on a web page is
+      # not where someone looks when they have just unzipped a file and it
+      # will not open.
+      - name: Write the instructions
+        shell: bash
+        run: |
+          case "${{ matrix.platform }}" in
+          windows)
+            cat > "READ ME FIRST.txt" <<'EOF'
+          Exec Assist - for Windows
+
+          1. Double-click ExecAssist-Windows.exe
+
+          2. Windows will probably say "Windows protected your PC". That is
+             because this app is not signed, not because anything is wrong
+             with it. Click "More info", then "Run anyway".
+
+          3. A black window opens and your browser follows a moment later,
+             already signed in. You are looking at a demo glazier's day.
+
+          Leave the black window open - that is the app running. Close it, or
+          press Ctrl+C in it, to stop.
+
+          Your account name and key are printed in that window. Keep them:
+          they are how you sign in from your phone or another computer, and
+          the key cannot be shown again.
+          EOF
+            ;;
+          mac)
+            cat > "READ ME FIRST.txt" <<EOF
+          Exec Assist - for ${{ matrix.note }}
+
+          macOS blocks programs downloaded from the internet until you say
+          otherwise, so this takes one command rather than a double-click.
+
+          1. Open Terminal (press Cmd+Space, type Terminal, press Enter)
+
+          2. Copy this whole line, paste it in, and press Enter:
+
+          cd ~/Downloads && xattr -dr com.apple.quarantine ${{ matrix.label }} && chmod +x ${{ matrix.label }} && ./${{ matrix.label }}
+
+          3. Your browser opens a moment later, already signed in. You are
+             looking at a demo glazier's day.
+
+          Leave Terminal open - that is the app running. Press Ctrl+C to stop.
+          To start it again later, repeat step 2.
+
+          Your account name and key are printed in Terminal. Keep them: they
+          are how you sign in from your phone or another computer, and the key
+          cannot be shown again.
+
+          (If you did not save it to Downloads, replace ~/Downloads above with
+          wherever the file actually is.)
+          EOF
+            ;;
+          *)
+            cat > "READ ME FIRST.txt" <<EOF
+          Exec Assist - for ${{ matrix.note }}
+
+          chmod +x ${{ matrix.label }} && ./${{ matrix.label }}
+
+          Your browser opens a moment later, already signed in. Ctrl+C stops it.
+          Your account name and key are printed in the terminal; keep them, as
+          the key cannot be shown again.
+          EOF
+            ;;
+          esac
 
       - uses: actions/upload-artifact@v4
         with:
-          name: exec-assist-${{ matrix.label }}
-          path: exec-assist-${{ matrix.label }}${{ matrix.ext }}
+          name: ${{ matrix.label }}
+          path: |
+            ${{ matrix.label }}${{ matrix.ext }}
+            READ ME FIRST.txt
           if-no-files-found: error
 
   release:
@@ -78,22 +159,24 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      # No merge-multiple: every artifact carries its own "READ ME FIRST.txt",
+      # so merging would have them overwrite each other and three of the four
+      # platforms would ship someone else's instructions. Keeping the artifacts
+      # in separate directories means only the binaries are attached, and the
+      # release body below carries the instructions instead.
       - uses: actions/download-artifact@v4
         with:
           path: downloads
-          merge-multiple: true
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: downloads/*
+          files: downloads/*/ExecAssist-*
           generate_release_notes: true
           body: |
-            Download the file for your computer, then see the README for the
-            one command to run it.
+            Download the one for your computer. Each download contains the app
+            and a "READ ME FIRST.txt" with the exact steps for that platform.
 
-            These builds are unsigned, so the first run needs one extra step:
+            - **Windows** — double-click it. If Windows objects, *More info* → *Run anyway*.
+            - **Mac** — one command, because macOS blocks downloaded apps until you clear them.
 
-            - **macOS** — `xattr -dr com.apple.quarantine ./exec-assist-*`
-            - **Windows** — if double-clicking is blocked, *More info* then *Run anyway*
-
-            On macOS and Linux you also need `chmod +x ./exec-assist-*` once.
+            Either way your browser opens by itself, already signed in.

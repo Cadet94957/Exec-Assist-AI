@@ -18,8 +18,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -39,61 +41,106 @@ import (
 func main() {
 	log.SetFlags(log.LstdFlags | log.LUTC)
 
+	// No arguments means someone double-clicked the binary, which is the most
+	// likely way this is ever launched by the person it is built for. That has
+	// to do the friendly thing, not start a bare server they cannot sign in to.
+	//
+	// Production says "serve" explicitly — see the Dockerfile ENTRYPOINT —
+	// so nothing real depends on the fall-through this replaces.
+	cmd, args := "quickstart", []string{}
 	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "create-tenant":
-			if err := createTenant(os.Args[2:]); err != nil {
-				log.Fatalf("create-tenant: %v", err)
-			}
-			return
-		case "quickstart":
-			if err := quickstart(os.Args[2:]); err != nil {
-				log.Fatalf("quickstart: %v", err)
-			}
-			return
-		case "seed-demo":
-			if err := seedDemo(os.Args[2:]); err != nil {
-				log.Fatalf("seed-demo: %v", err)
-			}
-			return
-		case "backfill":
-			if err := backfill(os.Args[2:]); err != nil {
-				log.Fatalf("backfill: %v", err)
-			}
-			return
-		case "vapid-keys":
-			keys, err := push.GenerateKeys(envOr("VAPID_SUBJECT", "mailto:support@example.com"))
-			if err != nil {
-				log.Fatalf("vapid-keys: %v", err)
-			}
-			fmt.Printf("VAPID_PUBLIC_KEY=%s\nVAPID_PRIVATE_KEY=%s\n\n", keys.Public, keys.Private)
-			fmt.Println("Set both as secrets. Never rotate them casually: every existing")
-			fmt.Println("subscription becomes invalid and notifications stop silently.")
-			return
-		case "backup":
-			if err := backup(os.Args[2:]); err != nil {
-				log.Fatalf("backup: %v", err)
-			}
-			return
-		case "restore":
-			if err := restore(os.Args[2:]); err != nil {
-				log.Fatalf("restore: %v", err)
-			}
-			return
-		case "verify-restore":
-			if err := verifyRestore(os.Args[2:]); err != nil {
-				log.Fatalf("verify-restore: %v", err)
-			}
-			return
-		}
+		cmd, args = os.Args[1], os.Args[2:]
 	}
 
-	if err := serve(); err != nil {
-		log.Fatalf("server: %v", err)
+	var err error
+	switch cmd {
+	case "quickstart":
+		err = quickstart(args)
+	case "serve":
+		err = serve("", "")
+	case "create-tenant":
+		err = createTenant(args)
+	case "seed-demo":
+		err = seedDemo(args)
+	case "backfill":
+		err = backfill(args)
+	case "vapid-keys":
+		err = vapidKeys()
+	case "backup":
+		err = backup(args)
+	case "restore":
+		err = restore(args)
+	case "verify-restore":
+		err = verifyRestore(args)
+	case "-h", "--help", "help":
+		usage()
+		return
+	default:
+		usage()
+		fatal(fmt.Errorf("unknown command %q", cmd))
+	}
+	if err != nil {
+		fatal(fmt.Errorf("%s: %w", cmd, err))
 	}
 }
 
-func serve() error {
+func usage() {
+	fmt.Println("Exec Assist — an operating assistant for trade contractors.")
+	fmt.Println()
+	fmt.Println("  (no command)    set up and run it locally, then open your browser")
+	fmt.Println("  serve           run the server only, for a real deployment")
+	fmt.Println("  create-tenant   add an account")
+	fmt.Println("  seed-demo       fill an account with a demo day")
+	fmt.Println("  vapid-keys      generate the keys push notifications need")
+	fmt.Println("  backup          snapshot every account")
+	fmt.Println("  restore         rebuild an account from a snapshot")
+	fmt.Println("  verify-restore  prove a backup can actually be restored")
+	fmt.Println()
+	fmt.Println("Add -h to any command for its options.")
+}
+
+func vapidKeys() error {
+	keys, err := push.GenerateKeys(envOr("VAPID_SUBJECT", "mailto:support@example.com"))
+	if err != nil {
+		return err
+	}
+	fmt.Printf("VAPID_PUBLIC_KEY=%s\nVAPID_PRIVATE_KEY=%s\n\n", keys.Public, keys.Private)
+	fmt.Println("Set both as secrets. Never rotate them casually: every existing")
+	fmt.Println("subscription becomes invalid and notifications stop silently.")
+	return nil
+}
+
+// fatal reports an error and exits, pausing first on Windows.
+//
+// A double-clicked console program on Windows closes its window the instant it
+// exits, so without this the whole failure — the reason, the fix, everything —
+// flashes past and the app simply appears to do nothing. The terminal check
+// matters as much as the pause: piped or redirected, there is nobody to press
+// a key, and blocking would hang a CI job instead of failing it.
+func fatal(err error) {
+	log.Printf("%v", err)
+	if runtime.GOOS == "windows" && isTerminal(os.Stdin) {
+		fmt.Println()
+		fmt.Println("Press Enter to close this window.")
+		fmt.Fscanln(os.Stdin)
+	}
+	os.Exit(1)
+}
+
+func isTerminal(f *os.File) bool {
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+// serve runs the web server.
+//
+// localToken and localTenant are empty for every real deployment. quickstart
+// passes them to enable a single-use sign-in link on loopback, so somebody
+// running this on their own laptop never has to copy a 48-character key out of
+// a terminal. They are arguments rather than environment variables on purpose:
+// a bypass that can be switched on by a stray env var in production is a
+// different and much worse thing than one that requires a caller to pass it.
+func serve(localToken, localTenant string) error {
 	addr := ":" + envOr("PORT", "8080")
 	dataDir := envOr("DATA_DIR", "./data")
 
@@ -176,6 +223,9 @@ func serve() error {
 	site, err := web.New(tenants, secret, os.Getenv("INSECURE_COOKIES") != "1", gcfg, box, brain, vapid)
 	if err != nil {
 		return err
+	}
+	if localToken != "" {
+		site.EnableLocalHandoff(localToken, localTenant)
 	}
 
 	srv := &http.Server{
@@ -726,24 +776,37 @@ func quickstart(args []string) error {
 		os.Setenv("SESSION_SECRET", hex.EncodeToString(secret))
 	}
 
-	url := "http://localhost:" + envOr("PORT", "8080")
+	// A single-use ticket that signs this browser in, so nobody has to
+	// retype a 48-character key. See web.Server.EnableLocalHandoff.
+	ticket := make([]byte, 32)
+	if _, err := rand.Read(ticket); err != nil {
+		return fmt.Errorf("generate sign-in link: %w", err)
+	}
+	token := hex.EncodeToString(ticket)
+
+	base := "http://localhost:" + envOr("PORT", "8080")
+	openAt := base + "/start?t=" + token
 
 	fmt.Println()
 	fmt.Println("  Your assistant is ready.")
 	fmt.Println()
-	fmt.Printf("    Open this:  %s\n", url)
-	// The sign-in form asks for both, so printing only the key sends people
-	// back to the terminal to guess the other half.
-	fmt.Printf("    Account:    %s\n", *id)
+	fmt.Println("  Opening your browser. If it does not appear, go to:")
+	fmt.Printf("    %s\n", openAt)
+	fmt.Println()
 	if created {
-		fmt.Printf("    Key:        %s\n", key)
+		// Printed to be kept, not to be typed — the link above signs this
+		// browser in. It is needed on another device, or after the link
+		// expires, and it cannot be shown again.
+		fmt.Println("  Keep these somewhere safe. They are how you sign in from")
+		fmt.Println("  anywhere else, and the key is not recoverable:")
 		fmt.Println()
-		fmt.Println("  Copy that key somewhere safe now. Only its hash is stored,")
-		fmt.Println("  so it cannot be shown again. To start over, delete the")
-		fmt.Printf("  %q folder and run this again.\n", *dataDir)
+		fmt.Printf("    Account:  %s\n", *id)
+		fmt.Printf("    Key:      %s\n", key)
+		fmt.Println()
+		fmt.Printf("  To start over, delete the %q folder and run this again.\n", *dataDir)
 	} else {
-		fmt.Println("    Key:        the one you saved the first time you ran this")
-		fmt.Printf("                (to start over, delete the %q folder)\n", *dataDir)
+		fmt.Printf("  Account: %s — with the key you saved the first time.\n", *id)
+		fmt.Printf("  To start over, delete the %q folder and run this again.\n", *dataDir)
 	}
 	fmt.Println()
 	fmt.Printf("  Timezone:   %s", zone)
@@ -758,7 +821,36 @@ func quickstart(args []string) error {
 	fmt.Println("  Press Ctrl+C to stop.")
 	fmt.Println()
 
-	return serve()
+	// serve blocks, so the browser has to be launched from alongside it. The
+	// delay is a courtesy to the listener rather than a guarantee: if the
+	// browser wins the race it shows a connection error and a refresh fixes
+	// it, which is a far smaller failure than blocking startup on a GUI.
+	go func() {
+		time.Sleep(400 * time.Millisecond)
+		openBrowser(openAt)
+	}()
+
+	return serve(token, *id)
+}
+
+// openBrowser asks the operating system to open a URL, and gives up quietly.
+//
+// Every failure here is survivable, because the URL is printed above either
+// way. A headless machine, a locked-down desktop, an unusual Linux with no
+// xdg-open — none of those are reasons to fail to start a server.
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		// Via rundll32 rather than `cmd /c start`, which treats the first
+		// quoted argument as a window title and mangles URLs containing &.
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	_ = cmd.Start()
 }
 
 // localZone reports the timezone to use and whether it had to be guessed.

@@ -34,42 +34,70 @@ Each contractor gets their own pair of SQLite files. Isolation is structural, no
 `WHERE tenant_id = ?` that someone can forget — and "export everything you know about my
 business" is a file copy.
 
-## Trying it out (no toolchain needed)
+## Trying it out
 
-Download a build and run one command. Nothing to install, no Go, no compiler.
+Nothing to install — no Go, no compiler, no accounts.
 
 1. Go to the repo's **Actions** tab → **Build downloads** → **Run workflow**.
-2. When it finishes, the binaries are at the bottom of the run page under *Artifacts*.
-   Download the one for your computer:
+2. When it finishes, the downloads are at the bottom of the run page under *Artifacts*.
+   Take the one for your computer:
 
    | You have | Download |
    |---|---|
-   | Mac, M1/M2/M3/M4 | `exec-assist-macos-apple-silicon` |
-   | Mac, Intel | `exec-assist-macos-intel` |
-   | Windows | `exec-assist-windows-amd64` |
-   | Linux | `exec-assist-linux-amd64` |
+   | A Mac from 2021 or later | `ExecAssist-Mac-AppleSilicon` |
+   | An older Intel Mac | `ExecAssist-Mac-Intel` |
+   | Windows | `ExecAssist-Windows` |
+   | Linux | `ExecAssist-Linux` |
 
-3. Unzip it, then:
+3. Unzip it. Each one contains the app and a `READ ME FIRST.txt` with the exact steps for
+   that platform — the short version is below.
+
+**On Windows**, double-click `ExecAssist-Windows.exe`. Windows will probably say *"Windows
+protected your PC"* — that is because the app is unsigned, not because anything is wrong
+with it. Click *More info* → *Run anyway*.
+
+**On a Mac**, macOS blocks anything downloaded until you say otherwise, so it is one
+command instead of a double-click. Open Terminal and paste this whole line:
 
 ```sh
-chmod +x ./exec-assist-*                       # macOS and Linux only
-./exec-assist-macos-apple-silicon quickstart
+cd ~/Downloads && xattr -dr com.apple.quarantine ExecAssist-Mac-AppleSilicon && chmod +x ExecAssist-Mac-AppleSilicon && ./ExecAssist-Mac-AppleSilicon
 ```
 
-It prints an address, an account name and a key. Open the address, sign in, and you are
-looking at a demo glazier's day: three stops in order, the Harborview gate code attached
-to the right one, and the 45-minute downtown parking buffer applied to the Marriott
-measure. That last one is the product in miniature — a standing rule, matched to the stop
-it affects, without anyone asking.
+Either way, **your browser opens by itself and you are already signed in.** You are looking
+at a demo glazier's day: three stops in order, the Harborview gate code attached to the
+right one, and a 45-minute downtown parking buffer applied to the Marriott measure. That
+last one is the product in miniature — a standing rule, matched to the stop it affects,
+without anyone asking for it.
 
-Run it again later and it picks up the same account rather than starting over. To wipe it,
-delete the `data` folder it created next to the binary.
+Leave the terminal window open; that is the app running. Ctrl+C stops it. Run it again
+later and it picks up the same account rather than starting over — to wipe it, delete the
+`data` folder next to the app.
+
+The terminal also prints an account name and a key. You do not need them to use it on this
+computer, but keep them: they are how you sign in from your phone or another machine, and
+the key is not recoverable.
 
 Set your timezone if the guess is wrong — everything about "today" depends on it:
 
 ```sh
-./exec-assist-... quickstart -tz America/Los_Angeles
+./ExecAssist-Mac-AppleSilicon -tz America/Los_Angeles
 ```
+
+<details>
+<summary>How the automatic sign-in works, and why it is safe</summary>
+
+Starting the app mints a random single-use token and opens your browser at
+`/start?t=…`, which exchanges it for an ordinary session cookie. It saves you copying a
+48-character key out of a terminal, which is the worst moment in any first run.
+
+It is an authentication bypass, so it is fenced four ways: it is switched on by an explicit
+call from the local setup path rather than by any environment variable — so no deployment
+can enable it by accident — the token is compared in constant time, the request must come
+from your own machine (loopback), and it works exactly once and expires after five minutes.
+A server started with `serve`, which is what runs in production, does not answer that route
+at all. See `TestHandoffIsOffByDefault` in `internal/web/handoff_test.go`.
+
+</details>
 
 ### The morning brief needs a key
 
@@ -77,31 +105,22 @@ Everything above works with no accounts and no API keys. The brief does not — 
 one feature that calls Claude, and without a key the button says so plainly:
 
 ```sh
-ANTHROPIC_API_KEY=sk-ant-... ./exec-assist-... quickstart
+ANTHROPIC_API_KEY=sk-ant-... ./ExecAssist-Mac-AppleSilicon
 ```
 
 A brief costs a fraction of a cent. Set a spend limit on the key first anyway — see
 [Cap the spend](#cap-the-spend).
 
-### The two warnings you will see
+### Why your computer objects the first time
 
-These builds are unsigned. Signing costs money and buys nothing while you are the only
-person installing them, so both operating systems will object once, and both are one step.
+These builds are unsigned, which is why macOS blocks them and Windows shows SmartScreen.
+Neither is a sign that anything is wrong — it is what unsigned means, and both are one
+step, once, per download.
 
-**macOS** quarantines anything downloaded from the internet, and will refuse to run the
-binary — usually with a dialog about an unidentified developer. Clear it:
-
-```sh
-xattr -dr com.apple.quarantine ./exec-assist-macos-apple-silicon
-```
-
-**Windows** SmartScreen warns about unsigned executables. Running it from PowerShell or
-Terminal generally avoids the prompt; if you double-click it and Windows blocks it, choose
-*More info* → *Run anyway*.
-
-Neither is a sign anything is wrong. They are what unsigned means. If you ever hand this
-to someone you are not on the phone with, that is the point to buy a certificate — see
-[Where this is up to](#where-this-is-up-to).
+Signing costs money and buys nothing while the only people installing this are you and a
+handful of contractors you are personally onboarding. The point to reconsider is when
+someone installs it without you on the phone — see
+[Where this is up to](#where-this-is-up-to) for what that costs.
 
 ### Phone notifications need a deploy
 
@@ -116,7 +135,7 @@ cgo, so `CGO_ENABLED=0` will not build.
 
 ```sh
 make check                                        # format, vet, tests
-make build && ./bin/server quickstart             # one command, as above
+make start                                        # same as the download above
 ```
 
 Or the long way, when you want control over the account:
@@ -126,6 +145,10 @@ make tenant ID=dave-glass NAME="Dave's Glass" TZ=America/Los_Angeles
 ./bin/server seed-demo -id dave-glass             # a plausible day, for looking at
 make run                                          # http://localhost:8080
 ```
+
+`./bin/server` with no arguments is `quickstart`: it sets up an account, seeds the demo
+day, starts the server and opens your browser signed in. `./bin/server serve` is the bare
+server with none of that, and is what production runs — see the Dockerfile.
 
 `create-tenant` prints an access key once and stores only its hash. Save it.
 

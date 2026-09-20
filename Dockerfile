@@ -30,4 +30,7 @@ ENV DATA_DIR=/data PORT=8080
 COPY --from=build /out/server /usr/local/bin/server
 
 EXPOSE 8080
-ENTRYPOINT ["/usr/local/bin/server"]
+# "serve" is explicit because running the binary with no arguments now means
+# quickstart — the friendly local setup for someone who double-clicked it. A
+# server should say what it wants rather than rely on a default.
+ENTRYPOINT ["/usr/local/bin/server", "serve"]

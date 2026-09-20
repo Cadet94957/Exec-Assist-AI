@@ -15,8 +15,11 @@ check: ## Everything CI would run — do this before deploying
 	go vet ./...
 	CGO_ENABLED=1 go test ./...
 
-run: build ## Run locally on :8080 with insecure cookies
-	INSECURE_COOKIES=1 ./bin/server
+run: build ## Run the bare server on :8080 with insecure cookies
+	INSECURE_COOKIES=1 ./bin/server serve
+
+start: build ## Set up an account, seed a demo day, and open your browser
+	./bin/server
 
 tenant: build ## Create a tenant: make tenant ID=dave-glass NAME="Dave's Glass"
 	./bin/server create-tenant -id "$(ID)" -name "$(NAME)" -tz "$(or $(TZ),UTC)"
@@ -27,4 +30,4 @@ eval: ## Measure the brief prompt against the real API (costs money)
 deploy: check ## Deploy to Fly (only after check passes)
 	fly deploy
 
-.PHONY: help build test check run tenant eval deploy
+.PHONY: help build test check run start tenant eval deploy

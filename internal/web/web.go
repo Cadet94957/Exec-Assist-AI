@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"embed"
 	"encoding/hex"
@@ -18,10 +19,12 @@ import (
 	"html/template"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Cadet94957/Exec-Assist-AI/internal/brief"
@@ -60,6 +63,43 @@ type Server struct {
 	secrets   *secrets.Box
 	brain     *llm.Client
 	vapid     push.Keys
+
+	// Set only by EnableLocalHandoff, and therefore zero in every deployment.
+	handoff handoff
+}
+
+// handoff is the single-use local sign-in described on EnableLocalHandoff.
+type handoff struct {
+	mu       sync.Mutex
+	token    string
+	tenantID string
+	expires  time.Time
+	used     bool
+}
+
+// handoffLifetime bounds the window in which the link works. It only has to
+// survive a browser launching, so it is short on purpose: a token that stays
+// valid all day is a token still sitting in a shell scrollback at 5pm.
+const handoffLifetime = 5 * time.Minute
+
+// EnableLocalHandoff allows one sign-in with token, as tenantID, from loopback.
+//
+// It exists so that running this on your own computer does not require copying
+// a 48-character key out of a terminal into a browser form, which is the worst
+// moment in the whole first-run experience and is entirely avoidable locally.
+//
+// It is an authentication bypass, so it is fenced four ways: it must be turned
+// on by an explicit call (there is no environment variable that enables it, so
+// no deployment can switch it on by accident), the token is compared in
+// constant time, the request must come from loopback, and it works exactly
+// once. A server built by New and left alone does not serve the route at all.
+func (s *Server) EnableLocalHandoff(token, tenantID string) {
+	s.handoff.mu.Lock()
+	defer s.handoff.mu.Unlock()
+	s.handoff.token = token
+	s.handoff.tenantID = tenantID
+	s.handoff.expires = time.Now().Add(handoffLifetime)
+	s.handoff.used = false
 }
 
 // New builds the server. secret signs session cookies; secure marks them
@@ -130,6 +170,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /login", s.handleLoginForm)
 	mux.HandleFunc("POST /login", s.handleLogin)
 	mux.HandleFunc("POST /logout", s.handleLogout)
+	// Registered unconditionally, but it 404s unless EnableLocalHandoff was
+	// called — the guard belongs with the secret it protects, not with the
+	// routing table, so that reading the handler tells you the whole story.
+	mux.HandleFunc("GET /start", s.handleLocalHandoff)
 	mux.Handle("GET /", s.authed(s.handleDashboard))
 	mux.Handle("GET /settings", s.authed(s.handleSettings))
 	mux.Handle("POST /brief", s.authed(s.handleGenerateBrief))
@@ -284,16 +328,62 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.setSession(w, t.ID)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// setSession issues the signed session cookie. Both ways of signing in end
+// here, so the cookie's shape is decided in exactly one place.
+func (s *Server) setSession(w http.ResponseWriter, tenantID string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
-		Value:    s.sign(t.ID),
+		Value:    s.sign(tenantID),
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   s.secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sessionLifetime.Seconds()),
 	})
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// handleLocalHandoff spends the single-use token minted by quickstart.
+//
+// Every rejection is a plain 404 rather than an explanation. There is nothing
+// useful to tell a caller who should not be here, and a distinct error for
+// "wrong token" versus "already used" would confirm to someone probing that
+// the feature is switched on at all.
+func (s *Server) handleLocalHandoff(w http.ResponseWriter, r *http.Request) {
+	s.handoff.mu.Lock()
+	defer s.handoff.mu.Unlock()
+
+	switch {
+	case s.handoff.token == "": // never enabled: the ordinary case
+	case s.handoff.used:
+	case time.Now().After(s.handoff.expires):
+	case !isLoopback(r.RemoteAddr):
+	case subtle.ConstantTimeCompare(
+		[]byte(r.URL.Query().Get("t")), []byte(s.handoff.token)) != 1:
+	default:
+		s.handoff.used = true
+		s.setSession(w, s.handoff.tenantID)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	http.NotFound(w, r)
+}
+
+// isLoopback reports whether a request came from this machine.
+//
+// A request arriving through any proxy or load balancer fails this, which is
+// the point: the handoff is for a browser on the same computer that started
+// the server, and nothing else.
+func isLoopback(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
