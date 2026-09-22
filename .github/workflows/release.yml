@@ -34,7 +34,8 @@ jobs:
             label: ExecAssist-Mac-AppleSilicon
             platform: mac
             note: "Macs with Apple silicon (M1, M2, M3, M4)"
-          - runner: macos-13
+          # macos-13 was retired; this is the Intel image that replaced it.
+          - runner: macos-15-intel
             label: ExecAssist-Mac-Intel
             platform: mac
             note: "Older Macs with Intel processors"
@@ -118,8 +119,10 @@ jobs:
           mac)
             # Quoted heredoc: the line below contains $(...) and "$f", which
             # must reach the reader intact rather than run on this build
-            # machine. ${{ }} is filled in by GitHub before the shell sees any
-            # of it, so the note still comes through.
+            # machine. GitHub fills in the matrix values before the shell sees
+            # any of it, so the note still comes through. (Never write an empty
+            # GitHub expression in a comment here: GitHub parses comments
+            # inside run blocks too, and rejects the whole file.)
             cat > "READ ME FIRST.txt" <<'EOF'
           Exec Assist - for ${{ matrix.note }}
 

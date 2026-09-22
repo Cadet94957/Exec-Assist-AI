@@ -22,3 +22,12 @@ jobs:
       # the brief eval is behind a build tag, so nothing here spends money or
       # needs a key.
       - run: make check
+
+      # The other workflows only run when someone presses a button, so a
+      # broken one is otherwise found by the person pressing it. That happened:
+      # an empty expression in a comment made GitHub reject the whole file, and
+      # a retired runner label meant the Intel Mac build could never start.
+      # This catches both kinds on every push. Pinned so it cannot change
+      # underneath us.
+      - name: Lint the workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck=
