@@ -157,7 +157,7 @@ func Run(ctx context.Context, client *llm.Client, stores Stores, loc *time.Locat
 		ToolDescription: "File the things worth remembering from this batch. Call once. An empty list is normal.",
 		Schema:          toolSchema(),
 		Required:        []string{"facts"},
-		MaxTokens:       4000,
+		MaxTokens:       16000, // room for Opus 5's thinking as well as the facts
 	})
 	res := Result{Appointments: len(appts), Usage: usage}
 	if err != nil {

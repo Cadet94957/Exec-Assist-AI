@@ -57,7 +57,7 @@ func main() {
 	case "quickstart":
 		err = quickstart(args)
 	case "serve":
-		err = serve("", "")
+		err = serve(serveOptions{})
 	case "create-tenant":
 		err = createTenant(args)
 	case "seed-demo":
@@ -132,16 +132,34 @@ func isTerminal(f *os.File) bool {
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
-// serve runs the web server.
+// serveOptions describes how serve runs. The zero value is a production
+// server; only quickstart sets anything.
 //
-// localToken and localTenant are empty for every real deployment. quickstart
-// passes them to enable a single-use sign-in link on loopback, so somebody
-// running this on their own laptop never has to copy a 48-character key out of
-// a terminal. They are arguments rather than environment variables on purpose:
-// a bypass that can be switched on by a stray env var in production is a
-// different and much worse thing than one that requires a caller to pass it.
-func serve(localToken, localTenant string) error {
-	addr := ":" + envOr("PORT", "8080")
+// These are arguments rather than environment variables on purpose. The
+// handoff below is an authentication bypass, and a bypass a stray env var can
+// switch on in production is a different and much worse thing than one that
+// requires a caller to ask for it.
+type serveOptions struct {
+	// local means one person running this on their own computer. It listens
+	// on loopback only — no firewall prompt on Windows or macOS, and nothing
+	// reachable from the café wifi — and moves to a free port if the usual
+	// one is taken rather than failing.
+	local bool
+	// handoffToken and handoffTenant enable the single-use sign-in link, so
+	// nobody has to copy a 48-character key out of a terminal.
+	handoffToken, handoffTenant string
+	// ready is called with the address to open once the port is bound, so a
+	// browser is never sent to a server that is not listening yet.
+	ready func(baseURL string)
+}
+
+// serve runs the web server.
+func serve(opts serveOptions) error {
+	port := envOr("PORT", "8080")
+	addr := ":" + port
+	if opts.local {
+		addr = "127.0.0.1:" + port
+	}
 	dataDir := envOr("DATA_DIR", "./data")
 
 	secret, err := sessionSecret()
@@ -224,12 +242,11 @@ func serve(localToken, localTenant string) error {
 	if err != nil {
 		return err
 	}
-	if localToken != "" {
-		site.EnableLocalHandoff(localToken, localTenant)
+	if opts.handoffToken != "" {
+		site.EnableLocalHandoff(opts.handoffToken, opts.handoffTenant)
 	}
 
 	srv := &http.Server{
-		Addr:              addr,
 		Handler:           site.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -268,13 +285,25 @@ func serve(localToken, localTenant string) error {
 		go extractLoop(ctx, brain, tenants)
 	}
 
+	ln, err := listen(addr, opts.local)
+	if err != nil {
+		return fmt.Errorf("listen: %w", err)
+	}
+	log.Printf("[web] listening on %s, data in %s", ln.Addr(), dataDir)
+
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("[web] listening on %s, data in %s", addr, dataDir)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
+	if opts.ready != nil {
+		// 127.0.0.1 rather than "localhost": the listener is IPv4 loopback,
+		// and a browser that resolves localhost to ::1 first would find
+		// nothing there.
+		_, bound, _ := net.SplitHostPort(ln.Addr().String())
+		opts.ready("http://127.0.0.1:" + bound)
+	}
 
 	select {
 	case err := <-errCh:
@@ -289,6 +318,23 @@ func serve(localToken, localTenant string) error {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	return nil
+}
+
+// listen binds addr. For a local run, a port already in use — 8080 is a
+// popular one — moves to any free port instead of failing, since the address
+// is opened for the person rather than typed by them. A deployment keeps the
+// port it was given, because a proxy is pointed at it.
+func listen(addr string, local bool) (net.Listener, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err == nil || !local {
+		return ln, err
+	}
+	fallback, ferr := net.Listen("tcp", "127.0.0.1:0")
+	if ferr != nil {
+		return nil, err // the original error explains more
+	}
+	log.Printf("[web] %s is in use, so using %s instead", addr, fallback.Addr())
+	return fallback, nil
 }
 
 // syncInterval is how often connected calendars are re-fetched. Frequent
@@ -743,19 +789,19 @@ func quickstart(args []string) error {
 	id := fs.String("id", "my-business", "account id")
 	name := fs.String("name", "My Business", "business name")
 	tz := fs.String("tz", "", "IANA timezone, e.g. America/Los_Angeles (default: this computer's)")
-	dataDir := fs.String("data", envOr("DATA_DIR", "./data"), "where to keep your data")
+	dataDir := fs.String("data", envOr("DATA_DIR", localDataDir()), "where to keep your data")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	zone, guessed := localZone(*tz)
+	zone, source := localZone(*tz)
 
 	// serve() reads DATA_DIR from the environment, so -data has to reach it
 	// that way or the account gets created in one directory and served from
 	// another — which presents as a valid key being rejected at sign-in.
 	os.Setenv("DATA_DIR", *dataDir)
 
-	key, created, err := ensureTenant(*dataDir, *id, *name, zone)
+	acct, key, created, err := ensureTenant(*dataDir, *id, *name, zone)
 	if err != nil {
 		return err
 	}
@@ -784,53 +830,68 @@ func quickstart(args []string) error {
 	}
 	token := hex.EncodeToString(ticket)
 
-	base := "http://localhost:" + envOr("PORT", "8080")
-	openAt := base + "/start?t=" + token
+	// Everything below waits for the port to be bound, so the link printed
+	// and opened carries the port actually in use — which is not 8080 if
+	// something else already had it — and the browser never races a server
+	// that is not listening yet.
+	ready := func(base string) {
+		openAt := base + "/start?t=" + token
 
-	fmt.Println()
-	fmt.Println("  Your assistant is ready.")
-	fmt.Println()
-	fmt.Println("  Opening your browser. If it does not appear, go to:")
-	fmt.Printf("    %s\n", openAt)
-	fmt.Println()
-	if created {
-		// Printed to be kept, not to be typed — the link above signs this
-		// browser in. It is needed on another device, or after the link
-		// expires, and it cannot be shown again.
-		fmt.Println("  Keep these somewhere safe. They are how you sign in from")
-		fmt.Println("  anywhere else, and the key is not recoverable:")
 		fmt.Println()
-		fmt.Printf("    Account:  %s\n", *id)
-		fmt.Printf("    Key:      %s\n", key)
+		fmt.Println("  Your assistant is ready.")
 		fmt.Println()
-		fmt.Printf("  To start over, delete the %q folder and run this again.\n", *dataDir)
-	} else {
-		fmt.Printf("  Account: %s — with the key you saved the first time.\n", *id)
-		fmt.Printf("  To start over, delete the %q folder and run this again.\n", *dataDir)
-	}
-	fmt.Println()
-	fmt.Printf("  Timezone:   %s", zone)
-	if guessed {
-		fmt.Print("  — guessed from this computer; set it with -tz if wrong")
-	}
-	fmt.Println()
-	if os.Getenv("ANTHROPIC_API_KEY") == "" {
-		fmt.Println("  Brief:      off. Set ANTHROPIC_API_KEY to turn on the morning brief.")
-	}
-	fmt.Println()
-	fmt.Println("  Press Ctrl+C to stop.")
-	fmt.Println()
+		fmt.Println("  Opening your browser. If it does not appear, go to:")
+		fmt.Printf("    %s\n", openAt)
+		fmt.Println()
+		if created {
+			// Printed to be kept, not to be typed — the link above signs
+			// this browser in. The key is needed on another device, or after
+			// the link expires, and it cannot be shown again.
+			fmt.Println("  Keep these somewhere safe. They are how you sign in from")
+			fmt.Println("  anywhere else, and the key is not recoverable:")
+			fmt.Println()
+			fmt.Printf("    Account:  %s\n", *id)
+			fmt.Printf("    Key:      %s\n", key)
+		} else {
+			fmt.Printf("  Account: %s — with the key you saved the first time.\n", *id)
+		}
+		fmt.Println()
+		fmt.Printf("  Your data:  %s\n", *dataDir)
+		fmt.Println("              (to start over, delete that folder and run this again)")
+		printZone(acct.Timezone, zone, source, created, *dataDir)
+		if os.Getenv("ANTHROPIC_API_KEY") == "" {
+			fmt.Println("  Brief:      off. Set ANTHROPIC_API_KEY to turn on the morning brief.")
+		}
+		fmt.Println()
+		fmt.Println("  Leave this window open while you use it. Ctrl+C stops it.")
+		fmt.Println()
 
-	// serve blocks, so the browser has to be launched from alongside it. The
-	// delay is a courtesy to the listener rather than a guarantee: if the
-	// browser wins the race it shows a connection error and a refresh fixes
-	// it, which is a far smaller failure than blocking startup on a GUI.
-	go func() {
-		time.Sleep(400 * time.Millisecond)
 		openBrowser(openAt)
-	}()
+	}
 
-	return serve(token, *id)
+	return serve(serveOptions{
+		local:         true,
+		handoffToken:  token,
+		handoffTenant: *id,
+		ready:         ready,
+	})
+}
+
+// localDataDir is where a local run keeps its data unless told otherwise:
+// ~/Library/Application Support/ExecAssist on a Mac, %AppData%\ExecAssist on
+// Windows.
+//
+// Not the current directory. Where that is depends on how the app was
+// launched: the Mac instructions run it from the home folder, and Windows runs
+// an exe opened from inside a zip in a temporary folder that is emptied
+// afterwards — so every launch would find no account, create a new one, and
+// hand out a new key. A fixed per-user folder is the same wherever the app is
+// started from, and it survives someone tidying their Downloads.
+func localDataDir() string {
+	if dir, err := os.UserConfigDir(); err == nil {
+		return filepath.Join(dir, "ExecAssist")
+	}
+	return "./data"
 }
 
 // openBrowser asks the operating system to open a URL, and gives up quietly.
@@ -853,49 +914,84 @@ func openBrowser(url string) {
 	_ = cmd.Start()
 }
 
-// localZone reports the timezone to use and whether it had to be guessed.
+// printZone tells the person which timezone their account uses and how much
+// to trust it. Everything about "today" and the time of the morning brief
+// depends on it, and a wrong zone produces no error — only a day that is
+// quietly hours out.
+func printZone(stored, wanted string, source zoneSource, created bool, dataDir string) {
+	switch {
+	case !created && stored != wanted && source != zoneFallback:
+		// An account made earlier keeps the zone it was made with. Say so
+		// rather than print a zone it is not using.
+		fmt.Printf("  Timezone:   %s — this account was set up with it, but this computer\n", stored)
+		fmt.Printf("              says %s. To switch, delete the %q folder and run this again.\n", wanted, dataDir)
+	case source == zoneFallback:
+		fmt.Printf("  Timezone:   %s — COULD NOT TELL this computer's timezone.\n", stored)
+		fmt.Println("              \"Today\" and the morning brief will be hours out. Run this")
+		fmt.Println("              again with your zone, for example:  -tz America/Chicago")
+	case source == zoneDetected:
+		fmt.Printf("  Timezone:   %s — from this computer; set it with -tz if wrong\n", stored)
+	default:
+		fmt.Printf("  Timezone:   %s\n", stored)
+	}
+}
+
+// zoneSource records where a timezone came from, so the person running this
+// can be told how far to trust it.
+type zoneSource int
+
+const (
+	zoneExplicit zoneSource = iota // they passed -tz
+	zoneDetected                   // read from this computer
+	zoneFallback                   // could not tell; UTC
+)
+
+// localZone reports the timezone to use and where it came from.
 //
-// Every "what does today look like" calculation keys off this, so a wrong guess
-// does not fail loudly — it quietly shows the wrong day. Hence the caller says
-// out loud which one it picked.
-func localZone(explicit string) (name string, guessed bool) {
+// Every "what does today look like" calculation keys off this, so a wrong zone
+// does not fail loudly — it quietly shows the wrong day and sends the brief at
+// the wrong hour. Hence the caller says out loud which one it picked, and says
+// it loudest when it could not tell.
+func localZone(explicit string) (string, zoneSource) {
 	if explicit != "" {
-		return explicit, false
+		return explicit, zoneExplicit
 	}
-	// time.Local resolves to an IANA name on a normally configured machine.
-	// In a bare container it can come back as "Local" or "UTC", neither of
-	// which is a real guess worth presenting as one.
-	if n := time.Local.String(); n != "" && n != "Local" && n != "UTC" {
-		return n, true
+	if name, ok := detectZone(); ok {
+		return name, zoneDetected
 	}
-	return "UTC", true
+	return "UTC", zoneFallback
 }
 
 // ensureTenant creates and seeds the account on first run, and does nothing on
-// every run after that. It returns the access key only when it created one.
-func ensureTenant(dataDir, id, name, zone string) (key string, created bool, err error) {
+// every run after that. It returns the account as stored, and the access key
+// only when it created one.
+//
+// Returning the stored account matters on later runs: its timezone was fixed
+// when it was created, and printing a freshly detected zone instead would
+// describe a setting the account is not actually using.
+func ensureTenant(dataDir, id, name, zone string) (t tenant.Tenant, key string, created bool, err error) {
 	tenants, err := tenant.NewManager(dataDir)
 	if err != nil {
-		return "", false, err
+		return t, "", false, err
 	}
 	defer tenants.Close()
 
-	if _, err := tenants.Get(id); err == nil {
-		return "", false, nil
+	if existing, err := tenants.Get(id); err == nil {
+		return existing, "", false, nil
 	}
 
-	t, key, err := tenants.Create(id, name, "glazier", zone, "")
+	t, key, err = tenants.Create(id, name, "glazier", zone, "")
 	if err != nil {
-		return "", false, fmt.Errorf("create your account: %w", err)
+		return t, "", false, fmt.Errorf("create your account: %w", err)
 	}
 	stores, err := tenants.Stores(t.ID)
 	if err != nil {
-		return "", false, err
+		return t, "", false, err
 	}
 	if err := seedTenant(t, stores); err != nil {
-		return "", false, fmt.Errorf("seed the demo day: %w", err)
+		return t, "", false, fmt.Errorf("seed the demo day: %w", err)
 	}
-	return key, true, nil
+	return t, key, true, nil
 }
 
 func createTenant(args []string) error {

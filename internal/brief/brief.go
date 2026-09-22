@@ -199,7 +199,7 @@ func Render(ctx context.Context, client *llm.Client, in Input) (Brief, error) {
 			},
 		},
 		Required:  []string{"headline", "body"},
-		MaxTokens: 2000,
+		MaxTokens: 16000, // room for Opus 5's thinking as well as the brief
 	})
 	out.Usage = usage
 	if err != nil {

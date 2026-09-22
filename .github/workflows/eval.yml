@@ -1,0 +1,59 @@
+# Runs the brief prompt against the real model and scores what it writes.
+#
+# The morning brief is the product, and this is the only thing that checks it
+# against a real model rather than a stub: no invented numbers or names, a
+# hedge on anything inferred, brevity on a quiet day, and coverage of what
+# matters on a busy one. It spends money, so it runs only when asked.
+#
+# One-time setup: Settings -> Secrets and variables -> Actions -> New
+# repository secret, named ANTHROPIC_API_KEY. Put a spend limit on that key in
+# the Anthropic console first.
+name: Measure the brief
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      # The eval skips itself when there is no key, which would turn this run
+      # green having measured nothing. A missing secret has to be a red X with
+      # the fix in it, not a pass.
+      - name: Check the API key is set
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::Add a repository secret named ANTHROPIC_API_KEY (Settings -> Secrets and variables -> Actions), then run this again."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # ANTHROPIC_MODEL is deliberately left unset, so this measures whatever
+      # model the product itself defaults to — the thing that will actually
+      # write a contractor's brief.
+      - name: Run the eval
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CGO_ENABLED: "1"
+        run: |
+          set -o pipefail
+          make eval 2>&1 | tee scorecard.txt
+
+      # Kept as a file because the log expires and the per-case cost is the
+      # number worth comparing across prompt changes.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: brief-scorecard
+          path: scorecard.txt

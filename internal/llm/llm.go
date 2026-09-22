@@ -17,6 +17,10 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
+// ErrTruncated means the response hit its token ceiling before the model
+// finished. The remedy is a larger MaxTokens, not a retry at the same size.
+var ErrTruncated = errors.New("llm: response ran out of room")
+
 // DefaultModel is the reasoning model. Quality here is the product: a brief
 // that misses the thing that mattered is worse than no brief.
 const DefaultModel = "claude-opus-5"
@@ -73,7 +77,9 @@ type ToolRequest struct {
 	Schema          map[string]any
 	// Required names the schema's required properties.
 	Required []string
-	// MaxTokens bounds the reply. Extraction replies are small.
+	// MaxTokens bounds the whole response, and Opus 5 thinks before it
+	// answers, so that thinking comes out of the same budget as the reply.
+	// Size it for both; it is a ceiling, not spend.
 	MaxTokens int64
 }
 
@@ -91,7 +97,7 @@ type Usage struct {
 // legitimate outcome — for extraction it means "nothing here worth recording".
 func (c *Client) CallTool(ctx context.Context, req ToolRequest) (json.RawMessage, Usage, error) {
 	if req.MaxTokens == 0 {
-		req.MaxTokens = 8000
+		req.MaxTokens = 16000
 	}
 
 	schema := anthropic.ToolInputSchemaParam{Properties: req.Schema}
@@ -138,6 +144,13 @@ func (c *Client) CallTool(ctx context.Context, req ToolRequest) (json.RawMessage
 	// before reading content or the result looks like an empty answer.
 	if resp.StopReason == anthropic.StopReasonRefusal {
 		return nil, usage, fmt.Errorf("llm: model declined the request")
+	}
+
+	// Running out of room is also an HTTP 200. Reported as "no tool call" it
+	// reads as the model deciding there was nothing to say, and a truncated
+	// brief on a busy day would look identical to a quiet one in the logs.
+	if resp.StopReason == anthropic.StopReasonMaxTokens {
+		return nil, usage, fmt.Errorf("%w: %s stopped at max_tokens=%d", ErrTruncated, req.ToolName, req.MaxTokens)
 	}
 
 	for _, block := range resp.Content {

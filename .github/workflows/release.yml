@@ -70,12 +70,22 @@ jobs:
         run: go build -trimpath -ldflags="-s -w" -o "${{ matrix.label }}${{ matrix.ext }}" ./cmd/server
         shell: bash
 
-      # Proves the binary runs on this platform at all. `-h` exits 0 without
-      # touching the filesystem or opening a port, so it is a real smoke test
-      # rather than a compile check.
+      # Proves the binary works on this platform, not just that it compiled.
+      #
+      # Creating an account in a real timezone is the check that matters: a
+      # contractor's Windows laptop has no IANA timezone database, so unless
+      # one is embedded in the binary every zone but UTC is rejected. This
+      # runner has Go installed and would quietly lend the binary its copy, so
+      # both places Go looks — ZONEINFO and GOROOT — are pointed at nothing,
+      # leaving the embedded database as the only way this can pass.
       - name: Smoke test
-        run: ./${{ matrix.label }}${{ matrix.ext }} -h
         shell: bash
+        run: |
+          ./${{ matrix.label }}${{ matrix.ext }} -h
+          env -u GOROOT ZONEINFO=/nonexistent \
+            ./${{ matrix.label }}${{ matrix.ext }} create-tenant \
+              -id smoke-test -name "Smoke Test" -tz America/Los_Angeles \
+              -data "$RUNNER_TEMP/smoke"
 
       # The instructions travel with the download. A README on a web page is
       # not where someone looks when they have just unzipped a file and it
@@ -106,30 +116,34 @@ jobs:
           EOF
             ;;
           mac)
-            cat > "READ ME FIRST.txt" <<EOF
+            # Quoted heredoc: the line below contains $(...) and "$f", which
+            # must reach the reader intact rather than run on this build
+            # machine. ${{ }} is filled in by GitHub before the shell sees any
+            # of it, so the note still comes through.
+            cat > "READ ME FIRST.txt" <<'EOF'
           Exec Assist - for ${{ matrix.note }}
 
           macOS blocks programs downloaded from the internet until you say
           otherwise, so this takes one command rather than a double-click.
 
-          1. Open Terminal (press Cmd+Space, type Terminal, press Enter)
+          1. Unzip the download in your Downloads folder, if your Mac has not
+             already done it for you.
 
-          2. Copy this whole line, paste it in, and press Enter:
+          2. Open Terminal (press Cmd+Space, type Terminal, press Enter).
 
-          cd ~/Downloads && xattr -dr com.apple.quarantine ${{ matrix.label }} && chmod +x ${{ matrix.label }} && ./${{ matrix.label }}
+          3. Copy this whole line, paste it in, and press Enter:
 
-          3. Your browser opens a moment later, already signed in. You are
+          f=$(ls -t ~/Downloads/ExecAssist-Mac-*/ExecAssist-Mac-* 2>/dev/null | head -1); if [ -n "$f" ]; then xattr -c "$f"; chmod +x "$f"; "$f"; else echo "Could not find ExecAssist in Downloads - unzip it there first."; fi
+
+          4. Your browser opens a moment later, already signed in. You are
              looking at a demo glazier's day.
 
           Leave Terminal open - that is the app running. Press Ctrl+C to stop.
-          To start it again later, repeat step 2.
+          To start it again later, paste the same line again.
 
           Your account name and key are printed in Terminal. Keep them: they
           are how you sign in from your phone or another computer, and the key
           cannot be shown again.
-
-          (If you did not save it to Downloads, replace ~/Downloads above with
-          wherever the file actually is.)
           EOF
             ;;
           *)

@@ -57,11 +57,15 @@ protected your PC"* — that is because the app is unsigned, not because anythin
 with it. Click *More info* → *Run anyway*.
 
 **On a Mac**, macOS blocks anything downloaded until you say otherwise, so it is one
-command instead of a double-click. Open Terminal and paste this whole line:
+command instead of a double-click. Make sure the download is unzipped in Downloads (Safari
+usually does this for you), then open Terminal and paste this whole line:
 
 ```sh
-cd ~/Downloads && xattr -dr com.apple.quarantine ExecAssist-Mac-AppleSilicon && chmod +x ExecAssist-Mac-AppleSilicon && ./ExecAssist-Mac-AppleSilicon
+f=$(ls -t ~/Downloads/ExecAssist-Mac-*/ExecAssist-Mac-* 2>/dev/null | head -1); if [ -n "$f" ]; then xattr -c "$f"; chmod +x "$f"; "$f"; else echo "Could not find ExecAssist in Downloads - unzip it there first."; fi
 ```
+
+It finds the newest copy in Downloads, so it still works when your Mac has unzipped it into a
+folder of the same name, or named a second download `… 2`.
 
 Either way, **your browser opens by itself and you are already signed in.** You are looking
 at a demo glazier's day: three stops in order, the Harborview gate code attached to the
@@ -70,18 +74,22 @@ last one is the product in miniature — a standing rule, matched to the stop it
 without anyone asking for it.
 
 Leave the terminal window open; that is the app running. Ctrl+C stops it. Run it again
-later and it picks up the same account rather than starting over — to wipe it, delete the
-`data` folder next to the app.
+later and it picks up the same account rather than starting over, wherever you start it
+from. Your data lives in one place per computer, which it prints under *Your data* — on a
+Mac `~/Library/Application Support/ExecAssist`, on Windows `%AppData%\ExecAssist`. To wipe
+it and start over, delete that folder.
 
 The terminal also prints an account name and a key. You do not need them to use it on this
 computer, but keep them: they are how you sign in from your phone or another machine, and
 the key is not recoverable.
 
-Set your timezone if the guess is wrong — everything about "today" depends on it:
-
-```sh
-./ExecAssist-Mac-AppleSilicon -tz America/Los_Angeles
-```
+It reads your timezone from your computer and prints it — check that line, because
+everything about "today" and the time of the morning brief depends on it. If it is wrong,
+or says it could not tell, delete the data folder and start it again with the zone added:
+on a Mac, change the final `"$f";` in the line above to `"$f" -tz America/Chicago;`; on
+Windows, run `.\ExecAssist-Windows.exe -tz America/Chicago` from PowerShell in the folder
+you unzipped it to. The zone is fixed when the account is created, which is why the old
+account has to go first.
 
 <details>
 <summary>How the automatic sign-in works, and why it is safe</summary>
@@ -102,10 +110,12 @@ at all. See `TestHandoffIsOffByDefault` in `internal/web/handoff_test.go`.
 ### The morning brief needs a key
 
 Everything above works with no accounts and no API keys. The brief does not — it is the
-one feature that calls Claude, and without a key the button says so plainly:
+one feature that calls Claude, and without a key the button says so plainly. Set the key in
+the same window, then start the app as before:
 
 ```sh
-ANTHROPIC_API_KEY=sk-ant-... ./ExecAssist-Mac-AppleSilicon
+export ANTHROPIC_API_KEY=sk-ant-...        # Mac, then paste the line above
+$env:ANTHROPIC_API_KEY="sk-ant-..."        # Windows PowerShell, then .\ExecAssist-Windows.exe
 ```
 
 A brief costs a fraction of a cent. Set a spend limit on the key first anyway — see
@@ -350,9 +360,19 @@ rule that either holds there or is lost silently.
 
 ### Measuring the prompt
 
+No toolchain needed: add a repository secret named `ANTHROPIC_API_KEY` (Settings → Secrets
+and variables → Actions — put a spend limit on the key first), then **Actions → Measure the
+brief → Run workflow**. The scorecard is in the log and saved as an artifact. Without the
+secret the run fails and says so, rather than passing having measured nothing.
+
+From a checkout, the same thing locally:
+
 ```sh
-make eval      # calls the real API; costs a few cents
+ANTHROPIC_API_KEY=sk-ant-... make eval      # calls the real API; costs a few cents
 ```
+
+It measures the model the product actually uses (`claude-opus-5`), since that is what
+writes a contractor's brief.
 
 The brief prompt is the product, and it is what will get tuned once pilot feedback
 arrives. Without a measurement that tuning is guesswork that can silently break the two
