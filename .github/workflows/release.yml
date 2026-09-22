@@ -65,6 +65,28 @@ jobs:
         run: gcc --version
         shell: bash
 
+      # Windows only. The vector-search extension (sqlite-vec) compiles against
+      # "sqlite3.h" and "sqlite3ext.h" from the system include path, which is
+      # where Linux (libsqlite3-dev) and the macOS SDK keep them; MinGW has
+      # neither. go-sqlite3 — the SQLite actually linked into this binary —
+      # bundles both, the first under the name sqlite3-binding.h. So add a
+      # one-line sqlite3.h that points at it and put both on the include path:
+      # the extension then compiles against exactly the SQLite it runs with.
+      #
+      # Setting CGO_CFLAGS replaces Go's default of "-O2 -g", so those are
+      # restated; leaving them out would build SQLite unoptimised, silently.
+      - name: Give sqlite-vec a SQLite header (Windows)
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: |
+          winpath() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
+          go mod download github.com/mattn/go-sqlite3
+          sqlite_dir=$(go list -m -f '{{.Dir}}' github.com/mattn/go-sqlite3)
+          inc="$RUNNER_TEMP/sqlite-include"
+          mkdir -p "$inc"
+          printf '#include "sqlite3-binding.h"\n' > "$inc/sqlite3.h"
+          echo "CGO_CFLAGS=-O2 -g -I$(winpath "$inc") -I$(winpath "$sqlite_dir")" >> "$GITHUB_ENV"
+
       - name: Build
         env:
           CGO_ENABLED: "1"
