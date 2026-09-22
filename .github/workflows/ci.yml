@@ -23,6 +23,15 @@ jobs:
       # needs a key.
       - run: make check
 
+      # go.mod and go.sum must cover every platform, not just the one this
+      # runs on. A Google library imports a Windows-only package that no Linux
+      # build touches, so its checksum was never recorded — every check here
+      # passed while the Windows download could not build at all. tidy
+      # resolves imports for all platforms, so this fails on the commit that
+      # causes it instead.
+      - name: Modules are tidy for every platform
+        run: go mod tidy -diff
+
       # The other workflows only run when someone presses a button, so a
       # broken one is otherwise found by the person pressing it. That happened:
       # an empty expression in a comment made GitHub reject the whole file, and
