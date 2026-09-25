@@ -4,6 +4,10 @@
 <a class="skip" href="#main">Skip to content</a>
 {{template "shell" .}}
   <h1 class="page">{{.Today}}</h1>
+  <p><a href="/hub">Follow-ups, decisions and connected tools</a></p>
+  {{if .Commitments}}<section aria-labelledby="followups-h"><h2 id="followups-h">Unfinished work</h2>
+  <div class="card"><ul class="plainlist">{{range .Commitments}}<li><a href="/hub#task-{{.ID}}">{{.Title}} — {{.Customer}}</a>
+  <p class="muted">Due {{time .DueAt $.Loc}} · {{.Owner}}{{if .WaitingOn}} · Waiting on {{.WaitingOn}}{{end}}</p></li>{{end}}</ul></div></section>{{end}}
 
   {{if .Notice}}<p class="notice" role="status">{{.Notice}}</p>{{end}}
 
@@ -96,7 +100,7 @@
   {{end}}
 
   <section aria-labelledby="ask-h">
-    <h2 id="ask-h">Ask me anything</h2>
+    <h2 id="ask-h">Search your business</h2>
     <div class="card">
       <label class="visually-hidden" for="ask">Search what I know about your business</label>
       <input type="search" name="q" id="ask" autocomplete="off"
@@ -107,3 +111,4 @@
   </section>
 {{template "shellend" .}}
 </body></html>
+

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en"><head>{{template "head" .}}<title>Follow-ups and connections</title></head>
+<body><a class="skip" href="#main">Skip to content</a>{{template "shell" .}}
+<h1 class="page">Follow-ups and connections</h1>
+<p><a href="/">Back to Today</a></p>
+{{if .Notice}}<p class="notice" role="status">{{.Notice}}</p>{{end}}
+<section aria-labelledby="decision-h"><h2 id="decision-h">Needs your decision</h2>
+{{range .Actions}}<div class="card">
+<p><strong>Link {{.Appointment}} to {{.Job}}?</strong></p><p>Calendar: {{time .StartsAt $.Loc}} · {{.Location}}</p><p>Job: {{.Customer}} · {{.Address}}</p><p>{{.Reason}}</p>
+<form method="post" action="/hub/decide">
+<input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="id" value="{{.ID}}">
+<button name="decision" value="approve">Approve link</button> <button name="decision" value="reject" class="link">Reject</button>
+</form></div>{{else}}<p class="muted">No decisions waiting.</p>{{end}}
+</section>
+<section aria-labelledby="follow-h"><h2 id="follow-h">Follow-ups</h2>
+{{range .Commitments}}<div class="card" id="task-{{.ID}}">
+<p><strong>{{.Title}} — {{.Customer}}</strong></p><p>{{.Job}} · {{.Address}}</p>
+<p>{{.Status}} · Due {{time .DueAt $.Loc}}</p>
+<details><summary>Evidence</summary><p>{{.Evidence}}</p><p class="muted">{{.SourceName}} · Event {{.SourceEvent}}</p>
+{{if .CompletedEvent}}<p>Completion verified by event {{.CompletedEvent}}.</p>{{end}}</details>
+{{if ne .Status "completed"}}<form method="post" action="/hub/commitment">
+<input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="id" value="{{.ID}}">
+<label for="owner-{{.ID}}">Owner</label><input id="owner-{{.ID}}" name="owner" maxlength="100" required value="{{.Owner}}">
+<label for="waiting-{{.ID}}">Waiting on (leave blank when ready)</label><input id="waiting-{{.ID}}" name="waiting" maxlength="200" value="{{.WaitingOn}}">
+<button>Save follow-up</button></form>{{end}}
+</div>{{else}}<p class="muted">Completed measurements create estimate follow-ups. A matching estimate-sent receipt closes them.</p>{{end}}
+</section>
+<section aria-labelledby="link-h"><h2 id="link-h">Connect a job to its calendar stop</h2>
+<p>Choose records for the same job. You will review the link before it is applied.</p>
+<form method="post" action="/hub/propose" class="card">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<label for="job">Job</label><select id="job" name="job" required><option value="">Select job</option>{{range .Jobs}}<option value="{{.ID}}">{{.Customer}} — {{.Title}} — {{.Address}}</option>{{end}}</select>
+<label for="appointment">Calendar stop</label><select id="appointment" name="appointment" required><option value="">Select stop</option>{{range .Appointments}}{{if not .JobID.Valid}}<option value="{{.ID}}">{{time .StartsAt $.Loc}} — {{.Title}} — {{.LocationText}}</option>{{end}}{{end}}</select>
+<button>Review link</button></form></section>
+<section aria-labelledby="connections-h"><h2 id="connections-h">Connected tools</h2>
+{{range .Connections}}<div class="card"><strong>{{.Name}}</strong> — {{if .Enabled}}accepting events{{else}}disconnected{{end}}
+<p class="muted">Last received: {{ago .LastSeen}}</p>
+{{if .Enabled}}<form method="post" action="/hub/disconnect"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="id" value="{{.ID}}"><button class="link">Disconnect</button></form>{{end}}</div>{{end}}
+{{if .HubReady}}<details><summary>Connect a receptionist or business tool</summary>
+<p>Use this with an adapter that supports the Exec Assist event format. Setup requires the tool's administrator.</p>
+<form method="post" action="/hub/connect" class="card"><input type="hidden" name="csrf" value="{{.CSRF}}">
+<label for="connection-name">Connection name</label><input id="connection-name" name="name" maxlength="100" required placeholder="My receptionist">
+<button>Create connection</button></form></details>{{else}}<p class="muted">Connection setup is not configured. Contact support.</p>{{end}}
+</section>{{template "shellend" .}}</body></html>

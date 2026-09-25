@@ -2,6 +2,7 @@ package google
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -99,7 +100,7 @@ func sync(ctx context.Context, cfg Config, store *ledger.Store, box *secrets.Box
 		prior, seen := known[ev.ID]
 		switch {
 		case !seen:
-			if err := emit(store, newAppointmentEvent(events.AppointmentCreated, ev, nil), now); err != nil {
+			if err := emit(store, newAppointmentEvent(events.AppointmentCreated, ev, nil, now), now); err != nil {
 				return res, err
 			}
 			res.Created++
@@ -109,7 +110,7 @@ func sync(ctx context.Context, cfg Config, store *ledger.Store, box *secrets.Box
 				StartsAt: prior.StartsAt,
 				Location: prior.Location.String,
 			}
-			if err := emit(store, newAppointmentEvent(events.AppointmentChanged, ev, before), now); err != nil {
+			if err := emit(store, newAppointmentEvent(events.AppointmentChanged, ev, before, now), now); err != nil {
 				return res, err
 			}
 			res.Changed++
@@ -132,7 +133,7 @@ func sync(ctx context.Context, cfg Config, store *ledger.Store, box *secrets.Box
 			continue
 		}
 		cancelled := events.Event{
-			ID:         Provider + ":cancelled:" + extID + ":" + a.StartsAt.UTC().Format(time.RFC3339),
+			ID:         Provider + ":cancelled:" + extID + ":" + now.UTC().Format(time.RFC3339Nano),
 			Type:       events.AppointmentCancelled,
 			Source:     events.SourceGoogle,
 			OccurredAt: now.UTC(),
@@ -173,9 +174,9 @@ func emit(store *ledger.Store, e events.Event, now time.Time) error {
 }
 
 // newAppointmentEvent builds a typed event from a calendar entry. The id is
-// derived from the event and its start time so a redelivery is idempotent but
-// a genuine move still records as a new change.
-func newAppointmentEvent(t events.Type, ev Event, before *events.AppointmentBefore) events.Event {
+// derived from the upstream revision, independently of appointment start time.
+// The observation timestamp describes the change, not when the job is booked.
+func newAppointmentEvent(t events.Type, ev Event, before *events.AppointmentBefore, now time.Time) events.Event {
 	payload := &events.Appointment{
 		ExternalID: ev.ID,
 		Title:      ev.Title,
@@ -188,11 +189,18 @@ func newAppointmentEvent(t events.Type, ev Event, before *events.AppointmentBefo
 		end := ev.End
 		payload.EndsAt = &end
 	}
+	// Provider revisions distinguish repeated edits at the same start time. For
+	// providers without a revision, a newly observed transition gets its own ID.
+	revision := ev.Revision
+	if revision == "" {
+		revision = now.UTC().Format(time.RFC3339Nano)
+	}
+	fingerprint := sha256.Sum256([]byte(fmt.Sprintf("%s:%s:%s:%s", Provider, t, ev.ID, revision)))
 	return events.Event{
-		ID:          fmt.Sprintf("%s:%s:%s:%s", Provider, t, ev.ID, ev.Start.UTC().Format(time.RFC3339)),
+		ID:          fmt.Sprintf("google:%x", fingerprint),
 		Type:        t,
 		Source:      events.SourceGoogle,
-		OccurredAt:  ev.Start.UTC(),
+		OccurredAt:  now.UTC(),
 		Appointment: payload,
 	}
 }
@@ -200,6 +208,9 @@ func newAppointmentEvent(t events.Type, ev Event, before *events.AppointmentBefo
 // differs reports whether anything worth recording as a change has changed.
 func differs(prior ledger.Appointment, next ledger.Appointment) bool {
 	if !prior.StartsAt.Equal(next.StartsAt) {
+		return true
+	}
+	if prior.EndsAt != next.EndsAt {
 		return true
 	}
 	if prior.Title != next.Title {

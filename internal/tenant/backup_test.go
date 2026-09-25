@@ -63,6 +63,19 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 		t.Fatalf("confirm: %v", err)
 	}
 
+	connection, err := stores.Ledger().AddHubConnection("Receptionist", []byte("sealed-credential"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = stores.Ledger().IngestHubEvent(connection, ledger.HubEvent{
+		ID: "measure-1", Type: "measurement.completed", OccurredAt: start,
+		JobID: "job-1", Title: "Measure", CustomerID: "customer-1", CustomerName: "Ferguson",
+		PropertyID: "property-1", Address: "41 Cedar", Evidence: "Source receipt",
+	}, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	backups := t.TempDir()
 	snap, err := m.Backup("dave-glass", backups)
 	if err != nil {
@@ -104,6 +117,11 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 		t.Fatalf("open restored memory: %v", err)
 	}
 	defer mem.Close()
+
+	tasks, err := led.Commitments(false)
+	if err != nil || len(tasks) != 1 || tasks[0].SourceEvent != "measure-1" {
+		t.Fatalf("hub state lost on restore: %+v, %v", tasks, err)
+	}
 
 	appts, err := led.Between(start.Add(-time.Hour), start.Add(time.Hour))
 	if err != nil {

@@ -461,3 +461,31 @@ func TestRetitleIsChangedButNotMoved(t *testing.T) {
 		}
 	}
 }
+
+func TestFutureAppointmentChangesAreVisibleNow(t *testing.T) {
+	store, box := testStore(t), testBox(t)
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	start := now.AddDate(0, 0, 7)
+	body := `{"items":[` + event("a", "First title", start) + `]}`
+	cfg := serveEvents(t, &body)
+	if err := google.Connect(store, box, "dave@example.com", liveToken()); err != nil {
+		t.Fatal(err)
+	}
+	for i, title := range []string{"First title", "Second title", "Third title", "Second title"} {
+		body = `{"items":[` + event("a", title, start) + `]}`
+		if _, err := google.Sync(context.Background(), cfg, store, box, now.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recs, err := store.RecentEvents(now.Add(-time.Minute), now.Add(10*time.Minute), 20)
+	if err != nil || len(recs) != 4 {
+		t.Fatalf("future appointment changes missing or collided: %d, %v", len(recs), err)
+	}
+	if _, err := google.Sync(context.Background(), cfg, store, box, now.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	recs, _ = store.RecentEvents(now.Add(-time.Minute), now.Add(10*time.Minute), 20)
+	if len(recs) != 4 {
+		t.Fatal("unchanged sync added another event")
+	}
+}

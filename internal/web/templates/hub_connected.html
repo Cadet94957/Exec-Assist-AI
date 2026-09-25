@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><head>{{template "head" .}}<title>Connection created</title></head>
+<body><a class="skip" href="#main">Skip to content</a>{{template "shell" .}}
+<h1 class="page">Connection created</h1>
+<p>Give these details to the administrator configuring your tool. The signing key is shown once. Keep it private.</p>
+<div class="card"><p>Webhook path (on this site's HTTPS address):</p><code>{{.HookPath}}</code><p>Signing key:</p><code style="overflow-wrap:anywhere">{{.Secret}}</code></div>
+<p>The adapter must sign each request and use the event format documented in <code>docs/hub-workflow.md</code>.</p>
+<p><a href="/hub">Back to connections</a></p>{{template "shellend" .}}</body></html>

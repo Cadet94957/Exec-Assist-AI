@@ -42,6 +42,7 @@ type Buffer struct {
 // Slot is one stop in the day.
 type Slot struct {
 	ID       string
+	JobID    string
 	Title    string
 	Location string
 	Start    time.Time
@@ -62,7 +63,9 @@ func (s Slot) Overlaps() bool { return s.GapBefore < 0 }
 func (s Slot) BufferTotal() time.Duration {
 	var total time.Duration
 	for _, b := range s.Buffers {
-		total += b.Duration
+		if b.Status == memory.Confirmed {
+			total += b.Duration
+		}
 	}
 	return total
 }
@@ -109,6 +112,7 @@ func Build(appts []ledger.Appointment, facts []memory.Recalled, loc *time.Locati
 	for _, a := range appts {
 		s := Slot{
 			ID:       a.ID,
+			JobID:    a.JobID.String,
 			Title:    a.Title,
 			Start:    a.StartsAt,
 			Location: a.LocationText(),

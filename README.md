@@ -13,12 +13,12 @@ and it gets better the longer it works for you.
 
 ## How it is built
 
-Two stores per contractor, and keeping them separate is the whole design:
+Two stores per contractor, and keeping operational state and learned rules separate is the core design:
 
 | | What goes in it | Why |
 |---|---|---|
-| **Ledger** (`ledger.db`) | Jobs, appointments, contacts, invoices — a mirror of their other apps | Disposable. Always re-syncable. |
-| **Memory** (`memory.db`) | Rules, lessons, preferences — each with a reason it matters | This is the product. |
+| **Ledger** (`ledger.db`) | Source mirrors plus identities, receipts, follow-ups, approvals, audit, and memory provenance | Authoritative hub state. Re-sync individual mirrors; never discard this database. |
+| **Memory** (`memory.db`) | Rules, lessons, preferences — each with a reason it matters | Learned business knowledge. Back up alongside the ledger. |
 
 The memory graph is [corbym/memoryweb](https://github.com/corbym/memoryweb) (MIT), linked
 as a Go library rather than run as a separate MCP server.
@@ -33,6 +33,20 @@ that one.
 Each contractor gets their own pair of SQLite files. Isolation is structural, not a
 `WHERE tenant_id = ?` that someone can forget — and "export everything you know about my
 business" is a file copy.
+
+## Cross-tool pilot workflow
+
+Exec Assist now connects a signed receptionist/business-tool event stream to its
+Google Calendar mirror. It creates shared job records, tracks estimate follow-ups
+after measurements, and closes them on matching estimate-sent receipts. Today
+shows unfinished work; `/hub` holds ownership, waiting state, source evidence,
+connections, and explicit approvals for linking a job to a calendar stop.
+
+See [the setup contract and acceptance workflow](docs/hub-workflow.md). This is a
+vendor-neutral adapter contract, not a claim of a ready-made integration with any
+particular receptionist. Multiple webhook accounts are supported; Google still
+uses one primary calendar per tenant. External sending and calendar writes are
+not implemented. The first approved action is a local job/calendar association.
 
 ## Trying it out
 
@@ -140,7 +154,7 @@ for living with it.
 
 ## Running it locally
 
-You need Go 1.24.13 or newer and a C compiler (`gcc`). Both sqlite-vec and go-sqlite3 are
+You need Go 1.26.0 or newer and a C compiler (`gcc`). Both sqlite-vec and go-sqlite3 are
 cgo, so `CGO_ENABLED=0` will not build.
 
 ```sh
@@ -204,7 +218,7 @@ This is the one step nobody can do for you — it needs your Google account.
    Calendar API" → Enable).
 3. **Configure the OAuth consent screen.** Choose *External*. Add the scopes
    `.../auth/calendar.events.readonly` and `.../auth/userinfo.email`. Add yourself under
-   *Test users*. Note the `.readonly` — see [This product reads](#this-product-reads)
+   *Test users*. Note the `.readonly` — see [Authority](#authority-is-earned-one-capability-at-a-time)
    below.
 4. **Create credentials**: APIs & Services → Credentials → Create Credentials → OAuth
    client ID → *Web application*. Under *Authorized redirect URIs* add exactly the value
@@ -225,13 +239,13 @@ scopes, which is exactly why this product does not touch Gmail. Until you are ve
 an unverified app shows a warning screen and is capped at 100 users, which is plenty for
 a pilot.
 
-### This product reads
+### Authority is earned one capability at a time
 
-The Google scope is `calendar.events.readonly`, and that is a deliberate constraint rather
-than a phase we have not got to yet.
+The Google scope is `calendar.events.readonly`, for the current calendar adapter.
 
-This assistant exists to tell a contractor about their day. It has no reason to ever
-change their calendar, so it does not ask for permission to. That means a stolen token, a
+The assistant observes, proposes, asks for approval, executes a specific allowed
+action, and verifies the result. Its first action links local job and appointment
+records; it does not need calendar-write access. That means a stolen token, a
 bug, or a mis-issued credential cannot delete a glazier's week — not because the code is
 careful, but because there is no code that could. `internal/connect/google` makes exactly
 one HTTP request and it is a `GET`, and `TestClientIsReadOnly` fails the build if that
@@ -268,7 +282,7 @@ its own review — never a permission requested early "just in case."
 Two places, deliberately.
 
 **Today** (`/`) — the only screen anyone opens daily. Stops in order, counters, and the
-ask-anything box. Nothing else.
+business search box. Nothing else.
 
 **Settings** (`/settings`) — calendar connection, **Memory**, and account.
 
@@ -327,7 +341,7 @@ the check that keeps out plausible inventions.
 
 Three more things hold the line:
 
-- Nothing is relied on until a person confirms it. An inference is not knowledge.
+- Inferred rules remain visibly tentative. Only confirmed rules contribute scheduling buffers; an inference does not create a schedule warning.
 - Domains are a fixed set of six. memoryweb degrades when domains multiply, because recall
   gets diluted across near-identical buckets.
 - A run proposing more than ten facts is treated as a malfunction and truncated.
@@ -517,15 +531,18 @@ reason — a stopped machine is a missed 6am brief.
 
 Phase 0 and Phase 1 of the revised spec are done. What works today: tenants, both stores, the `why_matters`
 guard, sign-in, the Today screen showing the day as a plan, Settings with an editable memory,
-ask-anything across both stores, Google Calendar with typed-event sync, the extraction
+business search across memory, appointments, jobs, follow-ups, contacts and invoices, Google Calendar with typed-event sync, the extraction
 pass with its review queue, the morning brief with web push at 6am local, backups with a
 proven restore, observability, and the installable desktop app.
 
-**Next is not a feature.** The spec's Phase 1.5 is a hard gate: recruit three to five
-glaziers, charge them, and do not build Phase 2 until at least three keep paying.
+**Next is a cross-tool paid pilot.** Recruit three to five glaziers and run the
+[complete hub workflow](docs/hub-workflow.md) with actual source events and calendars.
+Measure missed handoffs caught, completed follow-ups, corrections and time saved.
+Keep the retention gate: at least three should keep paying before broad expansion.
+A calendar-only pilot does not establish demand for the hub.
 
-Not built yet, and deliberately: SMS (Phase 2), the deterministic conflict engine
-(Phase 3), inbound email and the universal webhook (Phase 4), signup and billing
+Beyond this pilot: SMS (Phase 2), the deterministic conflict engine
+(Phase 3), inbound email and additional vendor-specific adapters, signup and billing
 (Phase 5).
 
 ### Hardening deferred until there are paying customers
@@ -577,3 +594,4 @@ internal/tenant/     registry, per-tenant store handles, local-day maths
 internal/embed/      Ollama-shaped endpoint backed by a hosted provider
 internal/web/        HTMX handlers and templates; no build step
 ```
+

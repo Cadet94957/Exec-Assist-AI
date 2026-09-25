@@ -2,9 +2,9 @@
 // properties, jobs, appointments, invoices, and the raw inbound events they
 // were derived from.
 //
-// This is deliberately separate from the memory graph. Everything here is a
-// fact about a specific thing that happened, is disposable, and can be
-// re-synced from the source app. Nothing here carries judgement. The moment a
+// This is deliberately separate from the memory graph. Source mirror rows can
+// be re-synced, but receipts, identities, commitments, approvals, audit and
+// memory metadata are authoritative and must be preserved. The moment a
 // record implies a rule — "this customer always wants tempered" — that rule is
 // filed through the memory package instead, with its why_matters.
 package ledger
@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS connections (
 `
 
 func (s *Store) migrate() error {
-	for _, stmt := range []string{schema, briefSchema, pushSchema} {
+	for _, stmt := range []string{schema, briefSchema, pushSchema, hubSchema} {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("ledger: migrate %s: %w", s.path, err)
 		}

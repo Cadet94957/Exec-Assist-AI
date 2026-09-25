@@ -131,6 +131,15 @@ func renderInput(in Input) string {
 		b.WriteString("\n")
 	}
 
+	if len(in.Commitments) > 0 {
+		b.WriteString("OPEN FOLLOW-UPS (source-backed; not yet completed)\n\n")
+		for _, c := range in.Commitments {
+			fmt.Fprintf(&b, "- %s: %s for %s; job %s; owner %s; due %s; status %s; waiting on %s; source %s event %s\n",
+				c.ID, c.Title, c.Customer, c.Job, c.Owner, c.DueAt.In(in.Loc).Format("Mon Jan 2 3:04pm"), c.Status, c.WaitingOn, c.SourceName, c.SourceEvent)
+		}
+		b.WriteString("\n")
+	}
+
 	if len(in.Changes) > 0 {
 		b.WriteString("CHANGED SINCE YESTERDAY\n\n")
 		for _, c := range in.Changes {

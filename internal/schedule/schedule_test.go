@@ -166,8 +166,8 @@ func TestBuffersAreExtractedFromExplicitDurations(t *testing.T) {
 	if len(s.Buffers) != 1 {
 		t.Fatalf("got %d buffers, want 1 — only the rule stating a number is arithmetic", len(s.Buffers))
 	}
-	if s.BufferTotal() != 45*time.Minute {
-		t.Errorf("buffer total = %v, want 45m", s.BufferTotal())
+	if s.BufferTotal() != 0 {
+		t.Errorf("unconfirmed buffer affected schedule: %v", s.BufferTotal())
 	}
 	// The buffer must remember it was an inference, so the brief hedges it.
 	if s.Buffers[0].Status != memory.Inferred {
@@ -238,5 +238,21 @@ func TestEmptyDayIsNotAnError(t *testing.T) {
 	}
 	if d.Loc != time.UTC {
 		t.Error("a nil location should fall back to UTC rather than panic")
+	}
+}
+
+func TestUnconfirmedBufferDoesNotCreateWarning(t *testing.T) {
+	facts := []memory.Recalled{fact("Marriott needs 45 minutes for parking", "Traffic", memory.Finding, memory.Inferred)}
+	appointments := []ledger.Appointment{
+		appt("a", "First stop", "", at(8, 0), 60),
+		appt("b", "Marriott", "", at(9, 20), 60),
+	}
+	d := schedule.Build(appointments, facts, time.UTC, day)
+	if d.Slots[1].Tight() || len(d.Slots[1].Notes) != 1 {
+		t.Fatal("unconfirmed rule must remain a note without changing the verdict")
+	}
+	facts[0].Status = memory.Confirmed
+	if !schedule.Build(appointments, facts, time.UTC, day).Slots[1].Tight() {
+		t.Fatal("confirmed rule did not affect the schedule")
 	}
 }

@@ -25,7 +25,7 @@ import (
 )
 
 // Scope is read-only, and deliberately so. This product reads a contractor's
-// calendar to tell them about their day; it has no reason to ever change one.
+// calendar. Future write capabilities require separate, explicit consent.
 //
 // An earlier version of this file requested the read-write scope on the theory
 // that asking later would force existing customers through a second consent
@@ -136,6 +136,7 @@ func (cl *Client) Token() (*oauth2.Token, error) {
 // Event is one calendar entry, reduced to what the ledger stores.
 type Event struct {
 	ID       string
+	Revision string
 	Title    string
 	Location string
 	Start    time.Time
@@ -153,6 +154,7 @@ type eventsResponse struct {
 
 type wireEvent struct {
 	ID       string        `json:"id"`
+	ETag     string        `json:"etag"`
 	Status   string        `json:"status"`
 	Summary  string        `json:"summary"`
 	Location string        `json:"location"`
@@ -230,7 +232,7 @@ func (cl *Client) Events(ctx context.Context, calendarID string, from, to time.T
 			return out, nil
 		}
 	}
-	return out, nil
+	return nil, fmt.Errorf("google: pagination limit reached; refusing a partial calendar snapshot")
 }
 
 // convert reduces a wire event, reporting false for anything not worth storing.
@@ -254,6 +256,7 @@ func convert(w wireEvent) (Event, bool) {
 
 	return Event{
 		ID:       w.ID,
+		Revision: w.ETag,
 		Title:    title,
 		Location: sanitise(w.Location, 200),
 		Start:    start,

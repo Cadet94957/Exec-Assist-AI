@@ -1,4 +1,6 @@
 {{if .Query}}
+  {{if .Business}}<h3 class="reshead">Business records</h3>
+  {{range .Business}}<div class="fact"><p><strong>{{if .URL}}<a href="{{.URL}}">{{.Title}}</a>{{else}}{{.Title}}{{end}}</strong> · {{.Kind}}</p><p>{{.Detail}}</p><p class="muted small">Record {{.ID}}</p></div>{{end}}{{end}}
   {{if .Stops}}
     <div style="margin-top:14px">
       <h3 class="reshead">Jobs</h3>
@@ -24,7 +26,8 @@
     {{end}}
     </div>
   {{end}}
-  {{if and (not .Results) (not .Stops)}}
+  {{if and (not .Results) (not .Stops) (not .Business)}}
     <p class="empty" style="margin-top:14px">Nothing on that yet.</p>
   {{end}}
 {{end}}
+

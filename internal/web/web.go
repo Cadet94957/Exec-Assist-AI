@@ -176,6 +176,12 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /start", s.handleLocalHandoff)
 	mux.Handle("GET /", s.authed(s.handleDashboard))
 	mux.Handle("GET /settings", s.authed(s.handleSettings))
+	mux.Handle("GET /hub", s.authed(s.handleHub))
+	mux.Handle("POST /hub/connect", s.authed(s.handleHubConnect))
+	for _, path := range []string{"/hub/disconnect", "/hub/propose", "/hub/decide", "/hub/commitment"} {
+		mux.Handle("POST "+path, s.authed(s.handleHubMutation))
+	}
+	mux.HandleFunc("POST /hooks/{tenant}/{connection}", s.handleReceptionistHook)
 	mux.Handle("POST /brief", s.authed(s.handleGenerateBrief))
 	mux.Handle("GET /push/key", s.authed(s.handlePushKey))
 	mux.Handle("POST /push/subscribe", s.authed(s.handlePushSubscribe))
@@ -446,6 +452,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, t tenan
 		"Concerns":        in.Schedule.Concerns(),
 		"Money":           in.Money,
 		"Changes":         in.Changes,
+		"Commitments":     in.Commitments,
 		"Stats":           stats,
 		"PendingCount":    len(pending),
 		"Today":           in.Date.Format("Monday, 2 January"),
@@ -669,8 +676,9 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request, t tenant.T
 
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	var (
-		results []memory.Recalled
-		stops   []ledger.Appointment
+		results  []memory.Recalled
+		stops    []ledger.Appointment
+		business []ledger.BusinessResult
 	)
 	if query != "" {
 		stores.Metrics().Count(obs.QuestionAsked)
@@ -683,6 +691,11 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request, t tenant.T
 			s.fail(w, "search your memory", err)
 			return
 		}
+		business, err = stores.Ledger().SearchBusiness(query)
+		if err != nil {
+			s.fail(w, "search business records", err)
+			return
+		}
 		stops, err = stores.Ledger().SearchAppointments(query, 5)
 		if err != nil {
 			s.fail(w, "search your jobs", err)
@@ -691,10 +704,11 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request, t tenant.T
 	}
 
 	s.render(w, "recall_results.html", map[string]any{
-		"Query":   query,
-		"Results": results,
-		"Stops":   stops,
-		"Loc":     t.Location(),
+		"Query":    query,
+		"Results":  results,
+		"Business": business,
+		"Stops":    stops,
+		"Loc":      t.Location(),
 	})
 }
 

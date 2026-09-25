@@ -45,13 +45,14 @@ type Input struct {
 	Standing []schedule.Note
 	Money    []Money
 	// Changes are things that moved since yesterday, from the typed event log.
-	Changes []string
+	Changes     []string
+	Commitments []ledger.Commitment
 }
 
 // Empty reports whether there is nothing worth saying. A quiet day deserves a
 // short brief, not an invented one (§13).
 func (in Input) Empty() bool {
-	return len(in.Schedule.Slots) == 0 && len(in.Money) == 0 && len(in.Changes) == 0
+	return len(in.Schedule.Slots) == 0 && len(in.Money) == 0 && len(in.Changes) == 0 && len(in.Commitments) == 0
 }
 
 // Stores is what assembling a brief needs.
@@ -87,6 +88,25 @@ func Assemble(stores Stores, now time.Time) (Input, error) {
 		Loc:      loc,
 		Schedule: schedule.Build(appts, facts, loc, start),
 		Standing: schedule.Standing(facts),
+	}
+
+	in.Commitments, err = stores.Ledger().Commitments(false)
+	if err != nil {
+		return Input{}, err
+	}
+
+	for i := range in.Schedule.Slots {
+		for _, c := range in.Commitments {
+			if in.Schedule.Slots[i].JobID == c.JobID {
+				text := c.Title + " — " + c.Status
+				if c.WaitingOn != "" {
+					text += "; waiting on " + c.WaitingOn
+				}
+				in.Schedule.Slots[i].Notes = append(in.Schedule.Slots[i].Notes, schedule.Note{
+					Text: text, Why: "Follow-up from " + c.SourceName + " event " + c.SourceEvent, Status: memory.Observed,
+				})
+			}
+		}
 	}
 
 	invoices, err := stores.Ledger().Outstanding(10)
