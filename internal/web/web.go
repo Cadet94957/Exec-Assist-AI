@@ -29,6 +29,7 @@ import (
 
 	"github.com/Cadet94957/Exec-Assist-AI/internal/brief"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/connect/google"
+	"github.com/Cadet94957/Exec-Assist-AI/internal/connect/personal"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/ledger"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/llm"
 	"github.com/Cadet94957/Exec-Assist-AI/internal/memory"
@@ -60,6 +61,7 @@ type Server struct {
 	secret    []byte
 	secure    bool
 	google    google.Config
+	personal  *personal.Service
 	secrets   *secrets.Box
 	brain     *llm.Client
 	vapid     push.Keys
@@ -139,6 +141,7 @@ func New(tenants *tenant.Manager, secret []byte, secure bool, gcfg google.Config
 		secret:    secret,
 		secure:    secure,
 		google:    gcfg,
+		personal:  personal.New(box),
 		secrets:   box,
 		brain:     brain,
 		vapid:     vapid,
@@ -175,6 +178,8 @@ func (s *Server) Routes() http.Handler {
 	// routing table, so that reading the handler tells you the whole story.
 	mux.HandleFunc("GET /start", s.handleLocalHandoff)
 	mux.Handle("GET /", s.authed(s.handleDashboard))
+	mux.Handle("GET /inbox", s.authed(s.handleInbox))
+	mux.Handle("POST /connect/personal/{provider}/{action}", s.authed(s.handlePersonal))
 	mux.Handle("GET /settings", s.authed(s.handleSettings))
 	mux.Handle("GET /hub", s.authed(s.handleHub))
 	mux.Handle("POST /hub/connect", s.authed(s.handleHubConnect))
@@ -445,24 +450,25 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, t tenan
 	}
 
 	s.render(w, "dashboard.html", map[string]any{
-		"Nav":             "today",
-		"Tenant":          t,
-		"Loc":             in.Loc,
-		"Day":             in.Schedule,
-		"Concerns":        in.Schedule.Concerns(),
-		"Money":           in.Money,
-		"Changes":         in.Changes,
-		"Commitments":     in.Commitments,
-		"Stats":           stats,
-		"PendingCount":    len(pending),
-		"Today":           in.Date.Format("Monday, 2 January"),
-		"Notice":          r.URL.Query().Get("notice"),
-		"GoogleConnected": connErr == nil,
-		"Connection":      conn,
-		"Brief":           today,
-		"HasBrief":        hasBrief,
-		"BrainReady":      s.brain != nil,
-		"PushReady":       s.vapid.Configured(),
+		"Nav":               "today",
+		"Tenant":            t,
+		"Loc":               in.Loc,
+		"Day":               in.Schedule,
+		"Concerns":          in.Schedule.Concerns(),
+		"Money":             in.Money,
+		"Changes":           in.Changes,
+		"Commitments":       in.Commitments,
+		"Stats":             stats,
+		"PendingCount":      len(pending),
+		"Today":             in.Date.Format("Monday, 2 January"),
+		"Notice":            r.URL.Query().Get("notice"),
+		"GoogleConnected":   connErr == nil,
+		"CalendarConnected": connErr == nil || hasAppleCalendar(stores.Ledger()),
+		"Connection":        conn,
+		"Brief":             today,
+		"HasBrief":          hasBrief,
+		"BrainReady":        s.brain != nil,
+		"PushReady":         s.vapid.Configured(),
 	})
 }
 
@@ -608,6 +614,7 @@ func WriteBrief(ctx context.Context, brain *llm.Client, stores tenant.TenantStor
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request, t tenant.Tenant) {
+	w.Header().Set("Cache-Control", "no-store")
 	stores, err := s.tenants.Stores(t.ID)
 	if err != nil {
 		s.fail(w, "open your data", err)
@@ -652,18 +659,21 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request, t tenant
 
 	important, recent := settled(sig.Important), settled(sig.Recent)
 	s.render(w, "settings.html", map[string]any{
-		"Nav":             "settings",
-		"Tenant":          t,
-		"Domains":         domains,
-		"Domain":          domain,
-		"Important":       important,
-		"Recent":          recent,
-		"Pending":         pending,
-		"Notice":          r.URL.Query().Get("notice"),
-		"Total":           len(important) + len(recent) + len(pending),
-		"GoogleReady":     s.google.Configured() && s.secrets != nil,
-		"GoogleConnected": connErr == nil,
-		"Connection":      conn,
+		"Nav":                 "settings",
+		"CSRF":                s.signState(t.ID),
+		"PersonalReady":       s.personal.Ready(),
+		"PersonalConnections": s.personalViews(stores.Ledger()),
+		"Tenant":              t,
+		"Domains":             domains,
+		"Domain":              domain,
+		"Important":           important,
+		"Recent":              recent,
+		"Pending":             pending,
+		"Notice":              r.URL.Query().Get("notice"),
+		"Total":               len(important) + len(recent) + len(pending),
+		"GoogleReady":         s.google.Configured() && s.secrets != nil,
+		"GoogleConnected":     connErr == nil,
+		"Connection":          conn,
 	})
 }
 
@@ -799,4 +809,9 @@ func (s *Server) verify(value string) (string, bool) {
 		return "", false
 	}
 	return id, true
+}
+
+func hasAppleCalendar(store *ledger.Store) bool {
+	_, err := store.GetConnection(personal.AppleCalendar)
+	return err == nil
 }

@@ -183,6 +183,16 @@ jobs:
           EOF
             ;;
           esac
+          cat >> "READ ME FIRST.txt" <<'EOF'
+
+          TRY YOUR OWN APPLE CALENDAR, APPLE MAIL, AND GMAIL
+
+          Start this executable with: quickstart -personal
+          This opens a separate personal account without the demo data.
+          In Settings, each connection has an email and app-password form.
+          See APPLE AND GMAIL.md for account setup and exact commands.
+          EOF
+          cp docs/apple-and-gmail.md "APPLE AND GMAIL.md"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -190,6 +200,7 @@ jobs:
           path: |
             ${{ matrix.label }}${{ matrix.ext }}
             READ ME FIRST.txt
+            APPLE AND GMAIL.md
           if-no-files-found: error
 
   release:

@@ -47,12 +47,13 @@ type Input struct {
 	// Changes are things that moved since yesterday, from the typed event log.
 	Changes     []string
 	Commitments []ledger.Commitment
+	Emails      []ledger.MailMessage
 }
 
 // Empty reports whether there is nothing worth saying. A quiet day deserves a
 // short brief, not an invented one (§13).
 func (in Input) Empty() bool {
-	return len(in.Schedule.Slots) == 0 && len(in.Money) == 0 && len(in.Changes) == 0 && len(in.Commitments) == 0
+	return len(in.Schedule.Slots) == 0 && len(in.Money) == 0 && len(in.Changes) == 0 && len(in.Commitments) == 0 && len(in.Emails) == 0
 }
 
 // Stores is what assembling a brief needs.
@@ -88,6 +89,11 @@ func Assemble(stores Stores, now time.Time) (Input, error) {
 		Loc:      loc,
 		Schedule: schedule.Build(appts, facts, loc, start),
 		Standing: schedule.Standing(facts),
+	}
+
+	in.Emails, err = stores.Ledger().RecentMail(now.AddDate(0, 0, -1), 15)
+	if err != nil {
+		return Input{}, err
 	}
 
 	in.Commitments, err = stores.Ledger().Commitments(false)

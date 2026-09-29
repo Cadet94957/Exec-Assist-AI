@@ -48,6 +48,20 @@ particular receptionist. Multiple webhook accounts are supported; Google still
 uses one primary calendar per tenant. External sending and calendar writes are
 not implemented. The first approved action is a local job/calendar association.
 
+## Connect your own Apple and Gmail accounts
+
+**iCloud Calendar, iCloud Mail, and Gmail are supported through read-only adapters.**
+Open [Apple and Gmail setup](docs/apple-and-gmail.md) for the complete walkthrough.
+Use `quickstart -personal` to create a separate account without sample data.
+Settings has an account email and app-password form for each provider. Gmail uses
+IMAP app passwords for this personal pilot; availability depends on your Google
+account policy. Google Calendar keeps its existing OAuth connection.
+
+Calendar feeds Today; email appears in Inbox, search, and the daily brief. New
+connections refresh every ten minutes while the app is running. Sending and
+remote edits are not implemented. App passwords themselves are not read-only
+credentials; the app only issues read operations.
+
 ## Trying it out
 
 Nothing to install — no Go, no compiler, no accounts.
@@ -188,7 +202,7 @@ server with none of that, and is what production runs — see the Dockerfile.
 | `VOYAGE_API_KEY` | unset | Turns on semantic recall. Unset is fine — memoryweb falls back to literal matching. |
 | `EMBED_MODEL` | `voyage-3.5-lite` | Must return 1024 dimensions; memoryweb's schema stores nothing else. |
 | `INSECURE_COOKIES` | unset | Set to `1` for local HTTP only. Never in production. |
-| `TOKEN_KEY` | unset | 64 hex chars (`openssl rand -hex 32`). Encrypts stored Google tokens. Without it calendar connection is disabled rather than storing credentials in the clear. |
+| `TOKEN_KEY` | unset | 64 hex chars (`openssl rand -hex 32`). Encrypts stored account credentials. Local quickstart creates a persistent key automatically; hosted serve mode requires this variable. Without it calendar connection is disabled rather than storing credentials in the clear. |
 | `GOOGLE_CLIENT_ID` | unset | From Google Cloud Console — see below. |
 | `GOOGLE_CLIENT_SECRET` | unset | " |
 | `GOOGLE_REDIRECT_URL` | unset | `https://yourdomain/connect/google/callback`, matching the console exactly. |
@@ -235,7 +249,7 @@ contractors.
 **Publishing needs verification because `calendar.events.readonly` is a "sensitive" scope.** That
 means a review of your consent screen and a privacy policy — annoying, but weeks not
 months. It is *not* the CASA Tier 2 security assessment; that is only for "restricted"
-scopes, which is exactly why this product does not touch Gmail. Until you are verified,
+scopes, which is why Gmail OAuth is not part of this personal pilot (the new Gmail inbox adapter uses an app password). Until you are verified,
 an unverified app shows a warning screen and is capped at 100 users, which is plenty for
 a pilot.
 
@@ -260,7 +274,7 @@ access"* — which is a hard thing to follow with "trust us."
 tokens keep the old, wider permission until they are re-issued. Settings → Disconnect,
 then connect again, and check the consent screen wording while you are there.
 
-The same rule holds going forward: Gmail, when it arrives, is `gmail.readonly`. Any
+If a Gmail OAuth adapter is added later, it should request only `gmail.readonly`. The current personal-pilot Gmail adapter uses IMAP with an app password. Any
 future need to write is a separate decision with its own scope, its own consent screen and
 its own review — never a permission requested early "just in case."
 
@@ -542,7 +556,7 @@ Keep the retention gate: at least three should keep paying before broad expansio
 A calendar-only pilot does not establish demand for the hub.
 
 Beyond this pilot: SMS (Phase 2), the deterministic conflict engine
-(Phase 3), inbound email and additional vendor-specific adapters, signup and billing
+(Phase 3), forwarded inbound email and additional vendor-specific adapters, signup and billing
 (Phase 5).
 
 ### Hardening deferred until there are paying customers

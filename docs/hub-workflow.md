@@ -136,6 +136,8 @@ retention judgments about a calendar-only brief.
 
 Search is deterministic retrieval across memories, appointments, jobs, contacts,
 invoices and follow-ups. It does not execute requests, interpret arbitrary date
-constraints, or promise full conversational reasoning. Named-vendor adapters,
+constraints, or promise full conversational reasoning. Apple Calendar and iCloud/Gmail inbox connections are documented in
+[Apple and Gmail setup](apple-and-gmail.md). Inbox mail does not automatically
+create or close hub commitments. Named receptionist adapters,
 email/SMS sending, autonomous external writes and natural-language planning remain
 future capabilities, requiring their own live credentials and verification.

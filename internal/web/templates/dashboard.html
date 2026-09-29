@@ -3,6 +3,7 @@
 <body>
 <a class="skip" href="#main">Skip to content</a>
 {{template "shell" .}}
+  <p><a href="/inbox">Inbox</a> · <a href="/settings#personal">Connect Apple or Gmail</a></p>
   <h1 class="page">{{.Today}}</h1>
   <p><a href="/hub">Follow-ups, decisions and connected tools</a></p>
   {{if .Commitments}}<section aria-labelledby="followups-h"><h2 id="followups-h">Unfinished work</h2>
@@ -63,7 +64,7 @@
           </li>
         {{end}}
         </ol>
-      {{else if .GoogleConnected}}
+      {{else if .CalendarConnected}}
         <p class="empty" style="margin:0">Nothing scheduled today.</p>
       {{else}}
         <p style="margin:0 0 12px">No calendar connected yet, so I can't see your day.</p>

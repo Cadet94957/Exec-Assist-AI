@@ -45,6 +45,7 @@ func (s *Store) SearchBusiness(query string) ([]BusinessResult, error) {
         UNION ALL SELECT 'invoice',i.id,COALESCE(i.number,'Invoice'),
             COALESCE(c.name,'') || ' | ' || i.status || ' | $' || printf('%.2f',i.amount_cents/100.0),
             '' FROM invoices i LEFT JOIN contacts c ON c.id=i.contact_id
+        UNION ALL SELECT 'email',id,subject,sender || ' | ' || substr(body,1,1000), '/inbox#' || id FROM mail_messages
         UNION ALL SELECT 'contact',id,name,COALESCE(email,'') || ' | ' || COALESCE(phone,''),
             '' FROM contacts
     ) WHERE `

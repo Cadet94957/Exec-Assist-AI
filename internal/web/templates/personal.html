@@ -1,0 +1,42 @@
+{{define "personal"}}
+<section id="personal" aria-labelledby="personal-h">
+  <h2 id="personal-h">Apple and Gmail</h2>
+  <p class="muted small">Connect the account that stores your data. Apple Calendar and Mail connections support iCloud accounts; Gmail works even if you normally read it in Apple Mail.</p>
+  <p class="muted small">Exec Assist only reads these accounts. App passwords themselves grant broader access, so use a dedicated one for this app. Enter app passwords here, never your normal account password.</p>
+  {{if not .PersonalReady}}<p class="notice">Account connections need encryption configured. Restart the downloaded app in quickstart mode, or set TOKEN_KEY on your server.</p>{{end}}
+  {{range .PersonalConnections}}
+  <div class="card">
+    <h3>{{.Name}}</h3>
+    {{if .Connected}}
+      <p><strong>{{.Account}}</strong> · Last successful sync: {{.LastSync}}</p>
+      {{if .Error}}<p class="notice" role="status">{{.Error}} Your previous copy may be out of date.</p>{{end}}
+      <form method="post" action="/connect/personal/{{.Provider}}/sync"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>Sync now</button></form>
+      <form method="post" action="/connect/personal/{{.Provider}}/disconnect"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link quiet">Disconnect and remove local copies</button></form>
+      <details><summary>Update app password</summary>
+        <form method="post" action="/connect/personal/{{.Provider}}/connect">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="account" value="{{.Account}}">
+          <label for="password-{{.Provider}}">New app password</label><input id="password-{{.Provider}}" type="password" name="password" required autocomplete="new-password" maxlength="128">
+          <button>Update and sync</button>
+        </form>
+      </details>
+    {{else if $.PersonalReady}}
+      {{if eq .Provider "gmail"}}
+      <p class="small">Turn on 2-Step Verification, then create an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener noreferrer">app password in Google</a>. Some work, school, and Advanced Protection accounts do not allow this method.</p>
+      {{else}}
+      <p class="small">At <a href="https://account.apple.com" target="_blank" rel="noopener noreferrer">account.apple.com</a>, open Sign-In and Security → App-Specific Passwords and generate one for Exec Assist. Two-factor authentication is required.</p>
+      {{end}}
+      {{if eq .Provider "icloud-calendar"}}<p class="small">Reads your iCloud calendars from 30 days ago through 60 days ahead.</p>{{else}}<p class="small">Reads up to 200 newest messages in your Inbox from the past 30 days. Previews are limited; attachments are not imported. Mail text can be sent to the configured AI provider when you generate a brief.</p>{{end}}
+      <form method="post" action="/connect/personal/{{.Provider}}/connect">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <label for="account-{{.Provider}}">{{if eq .Provider "icloud-calendar"}}Apple Account email{{else}}Full email address{{end}}</label>
+        <input id="account-{{.Provider}}" type="email" name="account" required autocomplete="username" maxlength="254">
+        <label for="password-{{.Provider}}">App-specific password</label>
+        <input id="password-{{.Provider}}" type="password" name="password" required autocomplete="new-password" maxlength="128">
+        <button>Connect and sync</button>
+      </form>
+    {{end}}
+  </div>
+  {{end}}
+  <p class="muted small">Connections refresh every 10 minutes while the app is running. <a href="/inbox">View synced email</a>.</p>
+</section>
+{{end}}

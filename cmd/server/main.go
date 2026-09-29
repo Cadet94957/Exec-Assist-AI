@@ -205,7 +205,7 @@ func serve(opts serveOptions) error {
 			return err
 		}
 	} else {
-		log.Print("[connect] TOKEN_KEY is unset — calendar connection is disabled (generate one with: openssl rand -hex 32)")
+		log.Print("[connect] TOKEN_KEY is unset — account connections are disabled (generate one with: openssl rand -hex 32)")
 	}
 
 	switch {
@@ -249,7 +249,7 @@ func serve(opts serveOptions) error {
 	srv := &http.Server{
 		Handler:           site.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      120 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 
@@ -263,6 +263,22 @@ func serve(opts serveOptions) error {
 	// and the 6am brief would be built from whatever was last fetched.
 	if gcfg.Configured() && box != nil {
 		go syncLoop(ctx, gcfg, tenants, box)
+	}
+
+	if box != nil {
+		go func() {
+			site.SyncPersonal(ctx)
+			ticker := time.NewTicker(syncInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					site.SyncPersonal(ctx)
+				}
+			}
+		}()
 	}
 
 	// A backup nobody schedules is a backup nobody has.
@@ -784,6 +800,7 @@ func startEmbedShim() (string, func(), error) {
 // re-seeded, so nobody ends up with six copies of the demo day.
 func quickstart(args []string) error {
 	fs := flag.NewFlagSet("quickstart", flag.ExitOnError)
+	personalMode := fs.Bool("personal", false, "start a separate personal account without demo data")
 	// Three characters is the floor the tenant id validator enforces, so a
 	// friendlier-looking "me" fails before anything else happens.
 	id := fs.String("id", "my-business", "account id")
@@ -801,7 +818,18 @@ func quickstart(args []string) error {
 	// another — which presents as a valid key being rejected at sign-in.
 	os.Setenv("DATA_DIR", *dataDir)
 
-	acct, key, created, err := ensureTenant(*dataDir, *id, *name, zone)
+	if *personalMode {
+		if *id == "my-business" {
+			*id = "personal"
+		}
+		if *name == "My Business" {
+			*name = "Personal"
+		}
+	}
+	if err := ensureLocalTokenKey(*dataDir); err != nil {
+		return err
+	}
+	acct, key, created, err := ensureTenant(*dataDir, *id, *name, zone, !*personalMode)
 	if err != nil {
 		return err
 	}
@@ -969,7 +997,7 @@ func localZone(explicit string) (string, zoneSource) {
 // Returning the stored account matters on later runs: its timezone was fixed
 // when it was created, and printing a freshly detected zone instead would
 // describe a setting the account is not actually using.
-func ensureTenant(dataDir, id, name, zone string) (t tenant.Tenant, key string, created bool, err error) {
+func ensureTenant(dataDir, id, name, zone string, demo ...bool) (t tenant.Tenant, key string, created bool, err error) {
 	tenants, err := tenant.NewManager(dataDir)
 	if err != nil {
 		return t, "", false, err
@@ -980,9 +1008,16 @@ func ensureTenant(dataDir, id, name, zone string) (t tenant.Tenant, key string, 
 		return existing, "", false, nil
 	}
 
-	t, key, err = tenants.Create(id, name, "glazier", zone, "")
+	trade := "glazier"
+	if len(demo) > 0 && !demo[0] {
+		trade = "personal"
+	}
+	t, key, err = tenants.Create(id, name, trade, zone, "")
 	if err != nil {
 		return t, "", false, fmt.Errorf("create your account: %w", err)
+	}
+	if len(demo) > 0 && !demo[0] {
+		return t, key, true, nil
 	}
 	stores, err := tenants.Stores(t.ID)
 	if err != nil {

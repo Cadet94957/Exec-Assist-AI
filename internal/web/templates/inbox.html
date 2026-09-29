@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head>{{template "head" .}}<title>Inbox</title></head><body>
+<a class="skip" href="#main">Skip to content</a>{{template "shell" .}}
+<h1 class="page">Inbox</h1>
+<p><a href="/settings#personal">Manage mail connections</a> · <a href="/">Today</a></p>
+<p class="muted small">Recent Inbox messages from connected iCloud Mail and Gmail accounts. This is a limited local copy, not your complete mailbox. Reading here does not mark mail as read. Use your mail app to reply.</p>
+{{range .PersonalConnections}}{{if .Error}}<p class="notice">{{.Name}} needs attention: {{.Error}} Last successful sync: {{.LastSync}}.</p>{{end}}{{end}}
+{{range .Messages}}
+<article class="card" id="{{.ID}}"><h2>{{.Subject}}</h2><p class="muted small">{{.Sender}} · {{time .ReceivedAt $.Loc}} · {{.Source}}{{if .Unread}} · Unread{{end}}</p>
+<details><summary>Read preview</summary><p style="white-space:pre-wrap;overflow-wrap:anywhere">{{.Body}}</p></details></article>
+{{else}}<div class="card"><p>No email synced yet. Connect an account in Settings, then choose Sync now.</p></div>{{end}}
+{{template "shellend" .}}</body></html>
