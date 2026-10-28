@@ -1,6 +1,6 @@
 # Exec Assist
 
-An AI executive assistant for individual trade contractors — glaziers first.
+An AI executive assistant for individual trade contractors.
 
 It is **not** an AI receptionist. Contractors already have one of those. This sits
 *above* the apps they already pay for — the receptionist that books the job, the
